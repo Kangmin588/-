@@ -85,6 +85,19 @@
           </div>
         </div>
 
+        <div class="control-group">
+          <h3>시리얼 통신</h3>
+          <button id="serialBtn" onclick="toggleSerial()">시리얼 연결</button>
+          <select id="baudRateSelect">
+            <option value="115200" selected>115200</option>
+            <option value="57600">57600</option>
+            <option value="38400">38400</option>
+            <option value="19200">19200</option>
+            <option value="9600">9600</option>
+          </select>
+          <div id="serialStatus" style="margin-top:8px; color: white;">대기 중</div>
+        </div>
+
         <div class="status">
           <h4>관측 상태</h4>
           <div id="statusText">대기 중...</div>
@@ -497,6 +510,109 @@
         button.textContent = "홈모드 OFF";
         console.log("홈모드 비활성화 - 수동으로 중심을 조정할 수 있습니다");
       }
+    }
+
+    // ---- Web Serial API ----
+    let serialPort = null;
+    let serialReader = null;
+    let serialWriter = null;
+    let serialConnected = false;
+
+    async function toggleSerial() {
+      if (!('serial' in navigator)) {
+        setSerialStatus('이 브라우저는 Web Serial을 지원하지 않습니다. Chrome/Edge에서 사용하세요.');
+        return;
+      }
+      if (!serialConnected) {
+        await connectSerial();
+      } else {
+        await disconnectSerial();
+      }
+    }
+
+    function setSerialStatus(text) {
+      const el = document.getElementById('serialStatus');
+      if (el) el.textContent = text;
+      console.log('[Serial]', text);
+    }
+
+    async function connectSerial() {
+      try {
+        const baudRate = parseInt(document.getElementById('baudRateSelect').value, 10) || 115200;
+        serialPort = await navigator.serial.requestPort();
+        await serialPort.open({ baudRate });
+        const decoder = new TextDecoderStream();
+        const encoder = new TextEncoderStream();
+        serialPort.readable.pipeTo(decoder.writable);
+        encoder.readable.pipeTo(serialPort.writable);
+        serialReader = decoder.readable.getReader();
+        serialWriter = encoder.writable.getWriter();
+        serialConnected = true;
+        document.getElementById('serialBtn').textContent = '시리얼 해제';
+        setSerialStatus(`연결됨 (baud ${baudRate})`);
+        readSerialLoop();
+      } catch (e) {
+        console.error(e);
+        setSerialStatus('연결 실패: ' + e.message);
+      }
+    }
+
+    async function disconnectSerial() {
+      try {
+        if (serialReader) { await serialReader.cancel(); serialReader.releaseLock(); serialReader = null; }
+        if (serialWriter) { await serialWriter.close(); serialWriter.releaseLock(); serialWriter = null; }
+        if (serialPort) { await serialPort.close(); serialPort = null; }
+      } catch (e) {
+        console.error(e);
+      }
+      serialConnected = false;
+      document.getElementById('serialBtn').textContent = '시리얼 연결';
+      setSerialStatus('해제됨');
+    }
+
+    async function readSerialLoop() {
+      try {
+        while (serialConnected && serialReader) {
+          const { value, done } = await serialReader.read();
+          if (done) break;
+          if (value) handleSerialLine(value);
+        }
+      } catch (e) {
+        console.error('readSerialLoop error', e);
+        setSerialStatus('읽기 오류: ' + e.message);
+      }
+    }
+
+    // 수신 포맷 예시: "AZ:123.4 ALT:56.7" 또는 "123.4,56.7"
+    function handleSerialLine(raw) {
+      const line = String(raw).trim();
+      let az = null, alt = null;
+      const m1 = line.match(/AZ\s*[:=]\s*([-+]?\d+(?:\.\d+)?)[^\d-+]*ALT\s*[:=]\s*([-+]?\d+(?:\.\d+)?)/i);
+      if (m1) {
+        az = parseFloat(m1[1]); alt = parseFloat(m1[2]);
+      } else {
+        const parts = line.split(/[,\s]+/).filter(Boolean);
+        if (parts.length >= 2) {
+          az = parseFloat(parts[0]); alt = parseFloat(parts[1]);
+        }
+      }
+      if (isFinite(az) && isFinite(alt)) {
+        currentAz = az; currentAlt = alt;
+        document.getElementById('azSlider').value = Math.round(((az % 360) + 360) % 360);
+        document.getElementById('altSlider').value = Math.round(alt);
+        document.getElementById('azValue').textContent = `${Math.round(az)}°`;
+        document.getElementById('altValue').textContent = `${Math.round(alt)}°`;
+        drawSkyPlot();
+        updateStatus();
+      }
+    }
+
+    // 시리얼로 명령 보내기 예시
+    async function sendSerialCommand(text) {
+      try {
+        if (!serialConnected || !serialWriter) return;
+        await serialWriter.write(text + "\n");
+      } catch (e) { console.error('sendSerialCommand error', e); }
     }
   </script>
 </body>
