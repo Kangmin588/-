@@ -377,18 +377,18 @@
         });
       }
 
-      // 시선 점 (빨간색)
-      const sightNorm = normalizeAzAlt(currentAz, currentAlt);
-      const sightCoords = toCenteredCoords(sightNorm.az, sightNorm.alt, centerNorm.az, centerNorm.alt);
+      // 시선 점 (빨간색, 보정 적용)
+      const sightCorr = normalizeAzAlt(currentAz + alignOffset[0], currentAlt + alignOffset[1]);
+      const sightCoords = toCenteredCoords(sightCorr.az, sightCorr.alt, centerNorm.az, centerNorm.alt);
       if (sightCoords.r <= FOV) {
         traces.push({
           r: [sightCoords.r],
           theta: [sightCoords.theta],
           mode: 'markers',
           type: 'scatterpolar',
-          name: '시선',
+          name: '시선(보정)',
           marker: { size: 12, color: 'red', line: { color: 'red', width: 2 } },
-          hovertemplate: '시선<br>상대각: %{theta:.1f}°<br>각거리: %{r:.1f}°<extra></extra>'
+          hovertemplate: '시선(보정)<br>상대각: %{theta:.1f}°<br>각거리: %{r:.1f}°<extra></extra>'
         });
       }
 
@@ -491,6 +491,8 @@
       alignOffset[0] = targetAltAz.az - currNorm.az;
       alignOffset[1] = targetAltAz.alt - currNorm.alt;
       console.log(`보정 적용: ΔAz=${alignOffset[0].toFixed(2)}°, ΔAlt=${alignOffset[1].toFixed(2)}°`);
+      drawSkyPlot();
+      updateStatus();
     }
 
     function setHomePosition() {
