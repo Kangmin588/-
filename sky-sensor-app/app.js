@@ -209,7 +209,7 @@ async function tryGetGeolocation() {
 }
 
 function animate(nowMs) {
-	reqAnimationFrame(animate);
+	window.requestAnimationFrame(animate);
 	const now = new Date();
 	if (deviceControls) deviceControls.update();
 	if (orbitControls) orbitControls.update();
@@ -229,7 +229,7 @@ function animate(nowMs) {
 	renderer.render(scene, camera);
 }
 
-const reqAnimationFrame = (cb) => (window.requestAnimationFrame || window.webkitRequestAnimationFrame || function (f) { return setTimeout(() => f(performance.now()), 16); })(cb);
+
 
 function updateStarsPositions(date) {
 	if (!starsPoints) return;
