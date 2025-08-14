@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+		<title>SensorSky - 센서 연동 플라네타리움</title>
+		<link rel="stylesheet" href="./styles.css" />
+	</head>
+	<body>
+		<div id="ui">
+			<div class="controls">
+				<button id="enableSensorsBtn">센서 활성화</button>
+				<button id="demoModeBtn">데모 모드(센서 없이)</button>
+				<button id="calibrateBtn">북쪽 보정</button>
+				<button id="resetBtn">리셋</button>
+			</div>
+			<div class="status">
+				<div>위치: <span id="locationText">-</span></div>
+				<div>시간: <span id="timeText">-</span></div>
+				<div>센서: <span id="sensorStatus">대기 중</span></div>
+				<div>모드: <span id="modeStatus">대기 중</span></div>
+			</div>
+			<div class="calibration">
+				<label>방위각 보정(°): <input id="yawOffset" type="range" min="-180" max="180" step="1" value="0" /> <span id="yawOffsetVal">0</span></label>
+			</div>
+		</div>
+		<canvas id="scene"></canvas>
+
+		<script type="module" src="./app.js"></script>
+	</body>
+</html>
