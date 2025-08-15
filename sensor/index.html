@@ -14,6 +14,12 @@ button:hover{background:#2a2a2a}
 label,input,span{font-size:14px}
 .status div{margin:2px 0}
 #dbg{position:fixed;left:8px;bottom:8px;z-index:20;color:#7CFC00;font:12px/1.35 monospace;white-space:pre-wrap;max-width:95vw;pointer-events:none}
+/* Assist sidebar */
+#assistPanel{position:fixed;top:0;right:0;height:100vh;width:min(560px,95vw);background:#0f162a;border-left:1px solid rgba(255,255,255,.15);z-index:30;transform:translateX(100%);transition:transform .3s ease;display:flex;flex-direction:column}
+#assistPanel.open{transform:translateX(0)}
+#assistPanelHeader{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.12)}
+#assistPanelHeader .title{font-weight:600}
+#assistPanel iframe{flex:1;border:0;width:100%}
 </style>
 </head>
 <body>
@@ -24,6 +30,7 @@ label,input,span{font-size:14px}
     <button onclick="SKY.setDemo()">데모 모드</button>
     <button onclick="SKY.calibrateNorth()">북쪽 보정</button>
     <button onclick="SKY.resetAll()">리셋</button>
+    <button onclick="SKY.toggleAssistant(true)">관측 보조도구</button>
   </div>
   <div class="panel status">
     <div>위치: <span id="locationText">인천(37.4563°, 126.7052°)</span></div>
@@ -56,6 +63,13 @@ label,input,span{font-size:14px}
 </div>
 <canvas id="scene"></canvas>
 <div id="dbg">init…</div>
+<div id="assistPanel" aria-hidden="true">
+  <div id="assistPanelHeader">
+    <div class="title">관측 보조도구</div>
+    <button onclick="SKY.toggleAssistant(false)">닫기</button>
+  </div>
+  <iframe id="assistFrame" title="관측 보조도구" loading="lazy" allow="serial"></iframe>
+</div>
 
 <script>
 (() => {
@@ -219,7 +233,8 @@ label,input,span{font-size:14px}
     },
     _syncOffsets(){ document.getElementById('yawOffset').value=String(Math.round(rad2deg(yawOffsetRad))); yawOffsetVal.textContent=String(Math.round(rad2deg(yawOffsetRad))); document.getElementById('altOffset').value=String(Math.round(rad2deg(altOffsetRad))); altOffsetVal.textContent=String(Math.round(rad2deg(altOffsetRad))); },
     _syncTime(){ const h=timeOffsetMs/3600000; document.getElementById('timeOffset').value=String(h); timeOffsetVal.textContent=(h>=0?'+':'')+h.toFixed(2)+'h'; },
-    _syncFov(){ document.getElementById('fov').value = String(Math.round(fovDeg)); fovVal.textContent = String(Math.round(fovDeg)); }
+    _syncFov(){ document.getElementById('fov').value = String(Math.round(fovDeg)); fovVal.textContent = String(Math.round(fovDeg)); },
+    toggleAssistant(open){ setAssistOpen(open==null ? !assistOpen : !!open); }
   };
 
   // 시리얼 데이터 파서(YPR/HEADING)
@@ -229,6 +244,21 @@ label,input,span{font-size:14px}
     m = line.match(/^HEADING\s*:\s*([-+]?\d+(?:\.\d+)?)/i);
     if(m){ yawRad=deg2rad(parseFloat(m[1])); }
   }
+
+  // Assist panel logic
+  let assistOpen=false;
+  function setAssistOpen(open){
+    assistOpen=!!open;
+    const panel=document.getElementById('assistPanel');
+    if(!panel) return;
+    panel.classList.toggle('open', assistOpen);
+    panel.setAttribute('aria-hidden', assistOpen? 'false':'true');
+    if(assistOpen){
+      const frame=document.getElementById('assistFrame');
+      if(frame && !frame.src){ frame.src='/plotly/'; }
+    }
+  }
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape' && assistOpen){ setAssistOpen(false); } });
 })();
 </script>
 </body>
