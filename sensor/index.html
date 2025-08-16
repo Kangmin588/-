@@ -20,6 +20,7 @@ label,input,span{font-size:14px}
 #assistPanelHeader{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.12)}
 #assistPanelHeader .title{font-weight:600}
 #assistPanel iframe{flex:1;border:0;width:100%}
+#assistResizer{position:absolute;top:0;left:-6px;width:6px;height:100%;cursor:ew-resize;background:transparent}
 </style>
 </head>
 <body>
@@ -31,6 +32,7 @@ label,input,span{font-size:14px}
     <button onclick="SKY.calibrateNorth()">북쪽 보정</button>
     <button onclick="SKY.resetAll()">리셋</button>
     <button onclick="SKY.toggleAssistant(true)">관측 보조도구</button>
+    <button onclick="SKY.toggleFullscreen()">전체화면</button>
   </div>
   <div class="panel status">
     <div>위치: <span id="locationText">인천(37.4563°, 126.7052°)</span></div>
@@ -68,6 +70,7 @@ label,input,span{font-size:14px}
     <div class="title">관측 보조도구</div>
     <button onclick="SKY.toggleAssistant(false)">닫기</button>
   </div>
+  <div id="assistResizer" title="가로 크기 조절"></div>
   <iframe id="assistFrame" title="관측 보조도구" loading="lazy" allow="serial"></iframe>
 </div>
 
@@ -254,11 +257,47 @@ label,input,span{font-size:14px}
     panel.classList.toggle('open', assistOpen);
     panel.setAttribute('aria-hidden', assistOpen? 'false':'true');
     if(assistOpen){
+      if (typeof assistWidthPx === 'number') { panel.style.width = assistWidthPx + 'px'; }
       const frame=document.getElementById('assistFrame');
       if(frame && !frame.src){ const src=(location.protocol==='file:')?'../plotly/index.html':'../plotly/'; frame.src=src; }
     }
   }
   document.addEventListener('keydown', e=>{ if(e.key==='Escape' && assistOpen){ setAssistOpen(false); } });
+
+  // Assist panel resizer + width persistence
+  const assistPanel = document.getElementById('assistPanel');
+  const assistFrame = document.getElementById('assistFrame');
+  const storedWidth = localStorage.getItem('assistWidthPx');
+  let assistWidthPx = storedWidth ? Math.max(300, Math.min(parseInt(storedWidth,10)||420, Math.floor(window.innerWidth*0.95))) : 420;
+  window.addEventListener('resize', () => {
+    assistWidthPx = Math.min(assistWidthPx, Math.floor(window.innerWidth*0.95));
+    if (assistPanel) assistPanel.style.width = assistWidthPx + 'px';
+  });
+  const resizer = document.getElementById('assistResizer');
+  let resizing = false;
+  if (resizer) {
+    resizer.addEventListener('pointerdown', e => { resizing = true; resizer.setPointerCapture(e.pointerId); });
+    resizer.addEventListener('pointermove', e => {
+      if (!resizing) return;
+      const maxW = Math.floor(window.innerWidth * 0.95);
+      const newW = Math.max(300, Math.min(maxW, Math.round(window.innerWidth - e.clientX)));
+      assistWidthPx = newW;
+      assistPanel.style.width = newW + 'px';
+    });
+    resizer.addEventListener('pointerup', e => { if (!resizing) return; resizing = false; resizer.releasePointerCapture(e.pointerId); localStorage.setItem('assistWidthPx', String(assistWidthPx)); });
+    resizer.addEventListener('dblclick', () => { assistWidthPx = (assistWidthPx < 500) ? 560 : 380; assistWidthPx = Math.min(assistWidthPx, Math.floor(window.innerWidth*0.95)); assistPanel.style.width = assistWidthPx + 'px'; localStorage.setItem('assistWidthPx', String(assistWidthPx)); });
+  }
+
+  // Fullscreen
+  if (!window.SKY) window.SKY = {};
+  window.SKY.toggleFullscreen = function(){
+    const el = document.documentElement;
+    if (!document.fullscreenElement) {
+      (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen || function(){}) .call(el);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen || function(){}) .call(document);
+    }
+  };
 })();
 </script>
 </body>
