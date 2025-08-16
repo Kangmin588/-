@@ -255,7 +255,7 @@ label,input,span{font-size:14px}
     panel.setAttribute('aria-hidden', assistOpen? 'false':'true');
     if(assistOpen){
       const frame=document.getElementById('assistFrame');
-      if(frame && !frame.src){ frame.src='/plotly/'; }
+      if(frame && !frame.src){ const src=(location.protocol==='file:')?'../plotly/index.html':'../plotly/'; frame.src=src; }
     }
   }
   document.addEventListener('keydown', e=>{ if(e.key==='Escape' && assistOpen){ setAssistOpen(false); } });
