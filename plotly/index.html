@@ -94,6 +94,12 @@ let homeMode=true, centerAz=180, centerAlt=90; // 기본 ON
 let alignOffset=[0,0];
 let demoTimer=null;
 let serialPort=null,serialReader=null,serialWriter=null,serialConnected=false,__serialBuf='';
+let homeAz=null, homeAlt=null;
+
+function updateCenterSlidersDisabled(){
+  if (typeof centerAzSlider !== 'undefined' && centerAzSlider) centerAzSlider.disabled = homeMode;
+  if (typeof centerAltSlider !== 'undefined' && centerAltSlider) centerAltSlider.disabled = homeMode;
+}
 
 // 초기화
 addEventListener('DOMContentLoaded',()=>{init();});
@@ -112,9 +118,13 @@ function init(){
   serialBtn=document.getElementById('serialBtn');
   statusText=document.getElementById('statusText');
 
+  const savedAz = parseFloat(localStorage.getItem('homeAz'));
+  const savedAlt = parseFloat(localStorage.getItem('homeAlt'));
+  if (Number.isFinite(savedAz) && Number.isFinite(savedAlt)) { homeAz = savedAz; homeAlt = savedAlt; }
+
   objects.forEach(o=>{const opt=document.createElement('option');opt.value=o.name;opt.textContent=o.name;objectSelect.appendChild(opt);});
   objectSelect.value=objects[0].name;
-  bind(); draw(); setInterval(updateStatus,200);
+  bind(); updateCenterSlidersDisabled(); draw(); setInterval(updateStatus,200);
   if (location.protocol.startsWith('http')) document.getElementById('envHint').style.display='none';
 }
 function bind(){
@@ -157,8 +167,8 @@ function draw(){
   if(typeof Plotly==='undefined'){document.getElementById('skyPlot').innerHTML='<div style="text-align:center;padding:50px;color:#fff;">Plotly 로딩 중/차단</div>';return;}
   const now=new Date().toISOString(); const traces=[];
   if(homeMode){
-    const ns=normalizeAzAlt(currentAz,currentAlt);
-    centerAz=ns.az; centerAlt=ns.alt;
+    if(homeAz==null || homeAlt==null){ const ns=normalizeAzAlt(currentAz,currentAlt); homeAz=ns.az; homeAlt=ns.alt; }
+    centerAz=homeAz; centerAlt=homeAlt;
     centerAzSlider.value=centerAz; centerAltSlider.value=centerAlt;
     centerAzValue.textContent=centerAz+'°'; centerAltValue.textContent=centerAlt+'°';
     homeModeBtn.textContent='홈모드 ON';
@@ -241,9 +251,12 @@ function alignToSelected(){
 }
 function setHomePosition(){
   const c=normalizeAzAlt(currentAz,currentAlt);
-  console.log(`홈포지션: Az ${c.az.toFixed(1)} Alt ${c.alt.toFixed(1)}`);
+  homeAz=c.az; homeAlt=c.alt;
+  try { localStorage.setItem('homeAz', String(homeAz)); localStorage.setItem('homeAlt', String(homeAlt)); } catch(_) {}
+  if(homeMode){ centerAz=homeAz; centerAlt=homeAlt; draw(); }
+  console.log(`홈포지션 저장: Az ${homeAz.toFixed(1)} Alt ${homeAlt.toFixed(1)}`);
 }
-function toggleHomeMode(){ homeMode=!homeMode; draw(); }
+function toggleHomeMode(){ homeMode=!homeMode; updateCenterSlidersDisabled(); draw(); }
 
 // 데모 모드(센서 없이 가짜 데이터)
 function toggleDemo(){
