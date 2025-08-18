@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>지평좌표계 천체관측 인터페이스</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;background:#0b1220;color:#fff;min-height:100vh}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+.header{text-align:center;margin-bottom:20px}.header h1{font-size:1.5rem;margin-bottom:10px;color:#fff}
+.main-content{display:grid;grid-template-columns:1fr 400px;gap:20px}
+.plot-container{background:#0f162a;border:1px solid #334;padding:20px;min-height:500px}
+.controls{background:#0f162a;border:1px solid #334;padding:20px}
+.control-group{margin-bottom:20px;padding:15px;background:#121a33;border-radius:5px;border:1px solid #334}
+.control-group h3{margin-bottom:10px;color:#9fd1ff}
+button{padding:8px 12px;border:none;border-radius:4px;background:#1f6feb;color:#fff;cursor:pointer;font-weight:bold;margin:5px}
+button:hover{background:#2b7bff}
+.slider-container{margin-bottom:15px}
+.slider-container label{display:block;margin-bottom:5px;font-weight:bold;color:#cfe8ff}
+input[type=range]{width:100%;height:6px;border-radius:3px;background:#234;outline:none}
+.status{background:#0f162a;border:1px solid #334;padding:15px;margin-top:20px;font-family:'Courier New',monospace;font-size:.9rem;white-space:pre-line;color:#cfe8ff}
+.status h4{color:#9fd1ff;margin-bottom:10px}
+select{width:100%;padding:8px;border-radius:4px;border:1px solid #334;background:#091428;color:#cfe8ff}
+.small{font-size:12px;opacity:.95}
+@media (max-width:1200px){.main-content{grid-template-columns:1fr}}
+a{color:#58a6ff}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header"><h1>지평좌표계 천체관측 인터페이스</h1></div>
+  <div class="main-content">
+    <div class="plot-container">
+      <div id="skyPlot" style="width:100%;height:420px;"></div>
+      <div id="envHint" class="small" style="margin-top:8px;color:#cfe8ff;background:#091428;padding:8px;border-radius:4px;">
+        참고: file:// 로 열면 시리얼 통신이 비활성화됩니다. (Chrome/Edge에서 http://127.0.0.1 로 열면 사용 가능)
+      </div>
+    </div>
+    <div class="controls">
+      <div class="control-group">
+        <h3>관측 제어</h3>
+        <button onclick="alignToSelected()">기준별 보정</button>
+        <button onclick="setHomePosition()">홈포지션 설정</button>
+        <button onclick="toggleHomeMode()" id="homeModeBtn">홈모드 ON</button>
+      </div>
+      <div class="control-group">
+        <h3>센서 시뮬레이션</h3>
+        <div class="slider-container"><label>방위각: <span id="azValue">0°</span></label><input type="range" id="azSlider" min="0" max="359" value="0" step="1"></div>
+        <div class="slider-container"><label>고도: <span id="altValue">0°</span></label><input type="range" id="altSlider" min="-90" max="180" value="0" step="1"></div>
+        <button id="demoBtn" onclick="toggleDemo()">데모 모드 시작</button>
+      </div>
+      <div class="control-group">
+        <h3>천체 선택</h3>
+        <select id="objectSelect"><option value="">천체를 선택하세요</option></select>
+      </div>
+      <div class="control-group">
+        <h3>중심 이동</h3>
+        <div class="slider-container"><label>중심 방위각: <span id="centerAzValue">180°</span></label><input type="range" id="centerAzSlider" min="0" max="359" value="180" step="1"></div>
+        <div class="slider-container"><label>중심 고도: <span id="centerAltValue">90°</span></label><input type="range" id="centerAltSlider" min="-90" max="180" value="90" step="1"></div>
+      </div>
+      <div class="status"><h4>관측 상태</h4><div id="statusText">대기 중...</div></div>
+      <p class="small">홈으로: <a href="../">index</a></p>
+    </div>
+  </div>
+</div>
+
+<script>
+const OBS_LAT=37.4567, OBS_LON=126.7052, OBS_ELEV=45, THRESHOLD=3.0, FOV=90;
+let azSlider, altSlider, centerAzSlider, centerAltSlider;
+let azValue, altValue, centerAzValue, centerAltValue;
+let objectSelect, demoBtn, homeModeBtn, statusText;
+const objects=[{"name":"시리우스","ra":101.2875,"dec":-16.7161,"type":"star"},{"name":"프로키온","ra":114.8250,"dec":5.2250,"type":"star"},{"name":"폴라리스","ra":37.9542,"dec":89.2642,"type":"star"},{"name":"아크투루스","ra":213.9167,"dec":19.1825,"type":"star"},{"name":"스피카","ra":201.3000,"dec":-11.1614,"type":"star"}];
+let currentAz=0,currentAlt=0,selectedObject=objects[0];
+let homeMode=true, centerAz=180, centerAlt=90;
+let alignOffset=[0,0];
+let demoTimer=null;
+
+addEventListener('DOMContentLoaded',()=>{init();});
+function init(){
+  azSlider=document.getElementById('azSlider');
+  altSlider=document.getElementById('altSlider');
+  centerAzSlider=document.getElementById('centerAzSlider');
+  centerAltSlider=document.getElementById('centerAltSlider');
+  azValue=document.getElementById('azValue');
+  altValue=document.getElementById('altValue');
+  centerAzValue=document.getElementById('centerAzValue');
+  centerAltValue=document.getElementById('centerAltValue');
+  objectSelect=document.getElementById('objectSelect');
+  demoBtn=document.getElementById('demoBtn');
+  homeModeBtn=document.getElementById('homeModeBtn');
+  statusText=document.getElementById('statusText');
+  objects.forEach(o=>{const opt=document.createElement('option');opt.value=o.name;opt.textContent=o.name;objectSelect.appendChild(opt);});
+  objectSelect.value=objects[0].name;
+  bind(); draw(); setInterval(updateStatus,200);
+  if (location.protocol.startsWith('http')) document.getElementById('envHint').style.display='none';
+}
+function bind(){
+  azSlider.oninput=e=>{currentAz=+e.target.value;azValue.textContent=currentAz+'°';draw();};
+  altSlider.oninput=e=>{currentAlt=+e.target.value;altValue.textContent=currentAlt+'°';draw();};
+  centerAzSlider.oninput=e=>{if(!homeMode){centerAz=+e.target.value;centerAzValue.textContent=centerAz+'°';draw();}};
+  centerAltSlider.oninput=e=>{if(!homeMode){centerAlt=+e.target.value;centerAltValue.textContent=centerAlt+'°';draw();}};
+  objectSelect.onchange=e=>{selectedObject=objects.find(o=>o.name===e.target.value)||objects[0];draw();};
+}
+function normalizeAzAlt(az,alt){let A=((az%360)+360)%360,H=alt;if(H>90){H=180-H;A=(A+180)%360;}else if(H<-90){H=-180-H;A=(A+180)%360;}return{az:A,alt:H};}
+function radecToAltAz(ra,dec,lat,lon,elev,t){
+  const n=new Date(t),h=n.getUTCHours(),m=n.getUTCMinutes(),s=n.getUTCSeconds();
+  const lst=(h*15+m*0.25+s*0.0041667+100)%360, ha=(lst-ra+360)%360;
+  const d=dec*Math.PI/180, phi=lat*Math.PI/180, H=ha*Math.PI/180;
+  const sinAlt=Math.sin(d)*Math.sin(phi)+Math.cos(d)*Math.cos(phi)*Math.cos(H);
+  const alt=Math.asin(Math.max(-1,Math.min(1,sinAlt)))*180/Math.PI;
+  const cosAz=(Math.sin(d)-Math.sin(alt*Math.PI/180)*Math.sin(phi))/(Math.cos(alt*Math.PI/180)*Math.cos(phi));
+  let az=Math.acos(Math.max(-1,Math.min(1,cosAz)))*180/Math.PI; if(ha>180){az=360-az;}
+  return {az,alt};
+}
+function angDist(az1,alt1,az2,alt2){
+  const a1=az1*Math.PI/180,h1=alt1*Math.PI/180,a2=az2*Math.PI/180,h2=alt2*Math.PI/180;
+  const c=Math.sin(h1)*Math.sin(h2)+Math.cos(h1)*Math.cos(h2)*Math.cos(a1-a2);
+  return Math.acos(Math.max(-1,Math.min(1,c)))*180/Math.PI;
+}
+function toCentered(az,alt,cAz,cAlt){
+  const a=az*Math.PI/180,h=alt*Math.PI/180,A0=cAz*Math.PI/180,H0=cAlt*Math.PI/180;
+  const cosR=Math.sin(H0)*Math.sin(h)+Math.cos(H0)*Math.cos(h)*Math.cos(a-A0);
+  const r=Math.acos(Math.max(-1,Math.min(1,cosR)))*180/Math.PI;
+  const y=Math.cos(h)*Math.sin(a-A0);
+  const x=Math.sin(h)*Math.cos(H0)-Math.cos(h)*Math.sin(H0)*Math.cos(a-A0);
+  const th=((Math.atan2(y,x)*180/Math.PI)+360)%360;
+  return {theta:th,r};
+}
+function draw(){
+  if(typeof Plotly==='undefined'){document.getElementById('skyPlot').innerHTML='<div style="text-align:center;padding:50px;color:#fff;">Plotly 로딩 중/차단</div>';return;}
+  const now=new Date().toISOString(); const traces=[];
+  if(homeMode){
+    const ns=normalizeAzAlt(currentAz,currentAlt);
+    centerAz=ns.az; centerAlt=ns.alt;
+    centerAzSlider.value=centerAz; centerAltSlider.value=centerAlt;
+    centerAzValue.textContent=centerAz+'°'; centerAltValue.textContent=centerAlt+'°';
+    homeModeBtn.textContent='홈모드 ON';
+  } else { homeModeBtn.textContent='홈모드 OFF'; }
+  const c=normalizeAzAlt(centerAz,centerAlt);
+  const inView=[];
+  for(const o of objects){
+    const aa=radecToAltAz(o.ra,o.dec,OBS_LAT,OBS_LON,OBS_ELEV,now);
+    const cc=toCentered(aa.az,aa.alt,c.az,c.alt);
+    if(cc.r<=FOV) inView.push({name:o.name,theta:cc.theta,r:cc.r});
+  }
+  if(inView.length){
+    traces.push({ r:inView.map(o=>o.r), theta:inView.map(o=>o.theta), mode:'markers', type:'scatterpolar', name:'천체',
+      marker:{size:8,color:'#fff',line:{color:'#fff',width:1}}, text:inView.map(o=>o.name),
+      hovertemplate:'<b>%{text}</b><br>상대각 %{theta:.1f}°<br>각거리 %{r:.1f}°<extra></extra>' });
+  }
+  const scorr=normalizeAzAlt(currentAz+alignOffset[0], currentAlt+alignOffset[1]);
+  const sc=toCentered(scorr.az,scorr.alt,c.az,c.alt);
+  if(sc.r<=FOV){
+    traces.push({ r:[sc.r], theta:[sc.theta], mode:'markers', type:'scatterpolar', name:'시선(보정)',
+      marker:{size:12,color:'red',line:{color:'red',width:2}},
+      hovertemplate:'시선(보정)<br>상대각 %{theta:.1f}°<br>각거리 %{r:.1f}°<extra></extra>' });
+  }
+  const ta=radecToAltAz(selectedObject.ra,selectedObject.dec,OBS_LAT,OBS_LON,OBS_ELEV,now);
+  const tc=toCentered(ta.az,ta.alt,c.az,c.alt);
+  traces.push({ r:[tc.r], theta:[tc.theta], mode:'markers', type:'scatterpolar', name:'목표',
+    marker:{size:30,color:'cyan',line:{color:'cyan',width:4},symbol:'circle-open'},
+    hovertemplate:'목표: '+selectedObject.name+'<br>상대각 %{theta:.1f}°<br>각거리 %{r:.1f}°<extra></extra>' });
+  traces.push({ r:[0,FOV], theta:[0,0], mode:'lines', type:'scatterpolar', name:'자오선', line:{color:'red',width:2,dash:'dash'}, showlegend:false });
+  const layout={ polar:{
+      radialaxis:{visible:true,range:[0,FOV],ticktext:['0°','30°','60°','90°'],tickvals:[0,30,60,90], tickmode:'array',tickfont:{color:'#cfe8ff'},gridcolor:'#334',linecolor:'#334'},
+      angularaxis:{direction:'clockwise',rotation:90,ticktext:['N','E','S','W'],tickvals:[0,90,180,270], tickmode:'array',tickfont:{color:'#cfe8ff'},gridcolor:'#334',linecolor:'#334'},
+      bgcolor:'#0b1220'
+    }, paper_bgcolor:'#0b1220', plot_bgcolor:'#0b1220', font:{color:'#cfe8ff'}, showlegend:true };
+  Plotly.newPlot('skyPlot', traces, layout, {responsive:true, displayModeBar:false});
+}
+function updateStatus(){
+  const now=new Date().toISOString();
+  const corr=normalizeAzAlt(currentAz+alignOffset[0],currentAlt+alignOffset[1]);
+  let min=1e9,near=null;
+  for(const o of objects){
+    const aa=radecToAltAz(o.ra,o.dec,OBS_LAT,OBS_LON,OBS_ELEV,now);
+    const d=angDist(corr.az,corr.alt,aa.az,aa.alt);
+    if(d<min){min=d;near={obj:o,az:aa.az,alt:aa.alt};}
+  }
+  const tgt=radecToAltAz(selectedObject.ra,selectedObject.dec,OBS_LAT,OBS_LON,OBS_ELEV,now);
+  const daz=(tgt.az-corr.az+360)%360, dalt=tgt.alt-corr.alt;
+  const dirText=Math.abs(daz)>Math.abs(dalt)?((0<daz&&daz<180)?'오른쪽':'왼쪽'):(dalt>0?'위쪽':'아래쪽');
+  let msg=min<=THRESHOLD?`현재 시선: ${near.obj.name} (${near.obj.type})\n각거리: ${min.toFixed(2)}도\n`:'주요 천체 없음\n';
+  msg+=`지시: ${dirText}으로 ${angDist(corr.az,corr.alt,tgt.az,tgt.alt).toFixed(2)}도 이동\n`;
+  if(alignOffset[0]||alignOffset[1]) msg+=`(보정 적용: ΔAz=${alignOffset[0].toFixed(2)}°, ΔAlt=${alignOffset[1].toFixed(2)}°)\n`;
+  msg+=`[중심: 방위각 ${centerAz.toFixed(1)}°, 고도 ${centerAlt.toFixed(1)}°]`; if(homeMode) msg+='\n[홈모드 활성화]';
+  statusText.textContent=msg;
+}
+function alignToSelected(){
+  const now=new Date().toISOString();
+  const t=radecToAltAz(selectedObject.ra,selectedObject.dec,OBS_LAT,OBS_LON,OBS_ELEV,now);
+  const c=normalizeAzAlt(currentAz,currentAlt);
+  alignOffset[0]=t.az-c.az; alignOffset[1]=t.alt-c.alt;
+  draw(); updateStatus();
+}
+function setHomePosition(){ const c=normalizeAzAlt(currentAz,currentAlt); console.log(`홈포지션: Az ${c.az.toFixed(1)} Alt ${c.alt.toFixed(1)}`); }
+function toggleHomeMode(){ homeMode=!homeMode; draw(); }
+function toggleDemo(){
+  if(demoTimer){ clearInterval(demoTimer); demoTimer=null; demoBtn.textContent='데모 모드 시작'; return; }
+  demoBtn.textContent='데모 모드 중지';
+  demoTimer=setInterval(()=>{
+    const t=Date.now()/1000;
+    const az=(t*12)%360;
+    const alt=45+30*Math.sin(t/2);
+    applyAzAlt(az,alt);
+  },120);
+}
+function applyAzAlt(az,alt){ if(!isFinite(az)||!isFinite(alt)) return; currentAz=az; currentAlt=alt; azSlider.value=Math.round(((az%360)+360)%360); altSlider.value=Math.round(alt); azValue.textContent=Math.round(az)+'°'; altValue.textContent=Math.round(alt)+'°'; draw(); updateStatus(); }
+</script>
+</body>
+</html>
+

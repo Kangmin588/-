@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>SensorSky - 사용자 별목록 + 시리얼 + FOV</title>
+<style>
+html,body{margin:0;padding:0;height:100%;background:#000;color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans,Ubuntu,Cantarell,Helvetica,Arial}
+#scene{position:fixed;top:0;left:0;width:100vw;height:100vh;display:block;z-index:0}
+#ui{position:fixed;top:0;left:0;padding:12px;width:100%;box-sizing:border-box;z-index:10;pointer-events:auto}
+.panel{background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 10px;margin-bottom:8px;max-width:900px}
+button{background:#1e1e1e;color:#eaeaea;border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:8px 12px;margin-right:6px;cursor:pointer}
+button:hover{background:#2a2a2a}
+label,input,span{font-size:14px}
+.status div{margin:2px 0}
+#dbg{position:fixed;left:8px;bottom:8px;z-index:20;color:#7CFC00;font:12px/1.35 monospace;white-space:pre-wrap;max-width:95vw;pointer-events:none}
+a{color:#58a6ff}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="panel">
+    <button onclick="SKY.enableDeviceSensors()">센서 활성화(기기)</button>
+    <button onclick="SKY.setDemo()">데모 모드</button>
+    <button onclick="SKY.calibrateNorth()">북쪽 보정</button>
+    <button onclick="SKY.resetAll()">리셋</button>
+    <a href="../" style="margin-left:6px">홈</a>
+  </div>
+  <div class="panel status">
+    <div>위치: <span id="locationText">인천(37.4563°, 126.7052°)</span></div>
+    <div>시간(시뮬레이션): <span id="timeText">-</span></div>
+    <div>센서: <span id="sensorStatus">비활성</span> · 모드: <span id="modeStatus">데모</span></div>
+    <div>방위(Y): <span id="yawText">0°</span> · 고도(P): <span id="pitchText">0°</span></div>
+  </div>
+  <div class="panel">
+    <label>방위각 보정(°):
+      <input id="yawOffset" type="range" min="-180" max="180" step="1" value="0" oninput="SKY.onYawOffset(this.value)">
+      <span id="yawOffsetVal">0</span>
+    </label>
+    <br/>
+    <label>고도 보정(°):
+      <input id="altOffset" type="range" min="-90" max="90" step="1" value="0" oninput="SKY.onAltOffset(this.value)">
+      <span id="altOffsetVal">0</span>
+    </label>
+    <br/>
+    <label>시간 오프셋(시간):
+      <input id="timeOffset" type="range" min="-12" max="12" step="0.25" value="0" oninput="SKY.onTimeOffset(this.value)">
+      <span id="timeOffsetVal">+0.00h</span>
+    </label>
+    <br/>
+    <label>화각(FOV, °):
+      <input id="fov" type="range" min="30" max="120" step="1" value="90" oninput="SKY.onFov(this.value)">
+      <span id="fovVal">90</span>
+    </label>
+  </div>
+</div>
+<canvas id="scene"></canvas>
+<div id="dbg">init…</div>
+
+<script>
+(() => {
+  const LABEL_MAG_LIMIT = 10.0;
+  const LOAD_MAG_LIMIT  = 10.0;
+  const raw = [
+    {n:'시리우스',ra:6.7525,dec:-16.7161,m:-1.46},
+    {n:'스피카',ra:13.4199,dec:-11.1614,m:0.98},
+    {n:'프로키온',ra:7.6550,dec:5.2250,m:0.34},
+    {n:'알데바란',ra:4.5986,dec:16.5092,m:0.86},
+    {n:'베가',ra:18.6156,dec:38.7837,m:0.03}
+  ];
+  const seen=new Set(); const stars=[]; for(const s of raw){ const k=`${s.n}|${s.ra}|${s.dec}`; if(!seen.has(k)){seen.add(k); stars.push(s);} }
+  const dbg=document.getElementById('dbg');
+  const canvas=document.getElementById('scene'); const ctx=canvas.getContext('2d');
+  const locationText=document.getElementById('locationText');
+  const timeText=document.getElementById('timeText');
+  const sensorStatus=document.getElementById('sensorStatus');
+  const modeStatus=document.getElementById('modeStatus');
+  const yawOffsetVal=document.getElementById('yawOffsetVal');
+  const altOffsetVal=document.getElementById('altOffsetVal');
+  const timeOffsetVal=document.getElementById('timeOffsetVal');
+  const yawText=document.getElementById('yawText');
+  const pitchText=document.getElementById('pitchText');
+  const fovVal=document.getElementById('fovVal');
+
+  let DPR=Math.min(window.devicePixelRatio||1,2), W=0,H=0; let yawRad=0,pitchRad=0,yawOffsetRad=0,altOffsetRad=0,timeOffsetMs=0; let fovDeg=90; let observerLatDeg=37.4563, observerLonDeg=126.7052;
+  window.addEventListener('resize', resize); resize(); function resize(){ DPR=Math.min(window.devicePixelRatio||1,2); W=Math.floor(innerWidth*DPR); H=Math.floor(innerHeight*DPR); canvas.width=W; canvas.height=H; canvas.style.width=(W/DPR)+'px'; canvas.style.height=(H/DPR)+'px'; }
+  const deg2rad=d=>d*Math.PI/180, rad2deg=r=>r*180/Math.PI; const wrap=a=>{const t=2*Math.PI; return ((a%t)+t)%t}; const h2rad=h=>h*(Math.PI/12);
+  function julianDate(date){ const Y=date.getUTCFullYear(),M=date.getUTCMonth()+1,D=date.getUTCDate(); const a=Math.floor((14-M)/12),y=Y+4800-a,m=M+12*a-3; const JDN=D+Math.floor((153*m+2)/5)+365*y+Math.floor(y/4)-Math.floor(y/100)+Math.floor(y/400)-32045; const frac=(date.getUTCHours()-12)/24+date.getUTCMinutes()/1440+date.getUTCSeconds()/86400+date.getUTCMilliseconds()/86400000; return JDN+frac; }
+  function lstRad(date, lonDeg){ const jd=julianDate(date),t=(jd-2451545.0)/36525.0; let gmst=6.697374558+2400.051336*t+0.000025862*t*t+(date.getUTCHours()+date.getUTCMinutes()/60+date.getUTCSeconds()/3600)*1.0027379093; gmst=((gmst%24)+24)%24; return h2rad(((gmst+lonDeg/15)%24+24)%24); }
+  function eqToHor(raH, decD, latD, lonD, date){ const ra=h2rad(raH), dec=deg2rad(decD), la=deg2rad(latD), LST=lstRad(date,lonD), HA=wrap(LST-ra); const sinAlt=Math.sin(dec)*Math.sin(la)+Math.cos(dec)*Math.cos(la)*Math.cos(HA); const alt=Math.asin(sinAlt); const y=-Math.cos(dec)*Math.sin(HA); const x=Math.sin(dec)*Math.cos(la)-Math.cos(dec)*Math.sin(la)*Math.cos(HA); const az=wrap(Math.atan2(y,x)); return {az,alt}; }
+  const horToVec=(az,alt)=>({x:Math.cos(alt)*Math.sin(az), y:Math.sin(alt), z:Math.cos(alt)*Math.cos(az)});
+  function toCamera(v,yaw,pitch){ const cy=Math.cos(-yaw),sy=Math.sin(-yaw); let x=v.x*cy+v.z*sy, y=v.y, z=-v.x*sy+v.z*cy; const p=Math.max(deg2rad(-89),Math.min(deg2rad(89),pitch)); const cx=Math.cos(-p),sx=Math.sin(-p); const y2=y*cx - z*sx, z2=y*sx + z*cx; return {x:x,y:y2,z:z2}; }
+  function project(v){ if(v.z<=0) return null; const f=(Math.min(W,H)/2)/Math.tan(deg2rad(fovDeg/2)); return {x:(W/2)+(v.x*f/v.z), y:(H/2)-(v.y*f/v.z)}; }
+  function magToSize(m){ const n=1-Math.min(Math.max((m-(-1.46))/(LOAD_MAG_LIMIT-(-1.46)),0),1); return 0.9+2.6*Math.pow(n,1.2); }
+  function drawLabel(text,x,y){ ctx.save(); ctx.font=`${Math.round(12*DPR)}px system-ui,-apple-system,Segoe UI,Roboto,sans-serif`; ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.lineWidth=2*DPR; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.fillStyle='rgba(230,240,255,0.95)'; ctx.strokeText(text,x,y); ctx.fillText(text,x,y); ctx.restore(); }
+  function draw(now){
+    const sim=new Date(Date.now()+timeOffsetMs);
+    if(!now||now%500<16){ timeText.textContent=sim.toLocaleString(); yawText.textContent=Math.round(rad2deg(wrap(yawRad+yawOffsetRad)))+'°'; pitchText.textContent=Math.round(rad2deg(pitchRad+altOffsetRad))+'°'; }
+    ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,W,H);
+    const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#00030A'); g.addColorStop(1,'#000'); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    for(const s of stars){ if(s.m>LOAD_MAG_LIMIT) continue; const h=eqToHor(s.ra,s.dec,observerLatDeg,observerLonDeg,sim); if(h.alt<=0) continue; const v=horToVec(h.az,h.alt); const cam=toCamera(v,wrap(yawRad+yawOffsetRad),pitchRad+altOffsetRad); const p=project(cam); if(!p) continue; const r=magToSize(s.m)*DPR; ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fillStyle='rgba(200,220,255,.95)'; ctx.fill(); if(s.m<=LABEL_MAG_LIMIT && s.n) drawLabel(s.n,p.x+r+4*DPR,p.y); }
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+  if('geolocation' in navigator){ navigator.geolocation.getCurrentPosition(pos=>{ observerLatDeg=pos.coords.latitude; observerLonDeg=pos.coords.longitude; locationText.textContent=`${observerLatDeg.toFixed(4)}°, ${observerLonDeg.toFixed(4)}°`; },()=>{}, {enableHighAccuracy:true,maximumAge:30000,timeout:8000}); }
+  document.getElementById('dbg').textContent=`별 ${stars.length}개 로드됨`;
+  window.SKY={
+    setDemo(){ sensorStatus.textContent='비활성'; modeStatus.textContent='데모'; },
+    calibrateNorth(){ const currentYaw=wrap(yawRad+yawOffsetRad); yawOffsetRad+=-currentYaw; this._syncOffsets(); },
+    resetAll(){ yawOffsetRad=0; altOffsetRad=0; timeOffsetMs=0; yawRad=0; pitchRad=0; fovDeg=90; this._syncOffsets(); this._syncTime(); this._syncFov(); },
+    onYawOffset(v){ const d=Number(v); yawOffsetVal.textContent=String(d); yawOffsetRad=deg2rad(d); },
+    onAltOffset(v){ const d=Number(v); altOffsetVal.textContent=String(d); altOffsetRad=deg2rad(d); },
+    onTimeOffset(v){ const h=Number(v); timeOffsetMs=h*3600000; timeOffsetVal.textContent=(h>=0?'+':'')+h.toFixed(2)+'h'; },
+    onFov(v){ fovDeg=Math.max(30,Math.min(120,Number(v))); fovVal.textContent=String(Math.round(fovDeg)); },
+    async enableDeviceSensors(){ try{ if(typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission==='function'){ const res=await DeviceOrientationEvent.requestPermission(); if(res!=='granted'){ alert('센서 권한을 허용해 주세요.'); return; } } window.addEventListener('deviceorientation', e=>{ if(e.absolute===true || e.webkitCompassHeading!=null){ const hd=e.webkitCompassHeading!=null? e.webkitCompassHeading : (e.alpha!=null? (360-e.alpha):null); if(hd!=null) yawRad=deg2rad(hd); } else if(e.alpha!=null){ yawRad=deg2rad(360-e.alpha); } if(e.beta!=null){ const beta=e.beta; const pitch=-beta; pitchRad=Math.max(deg2rad(-80),Math.min(deg2rad(80),deg2rad(pitch))); } }, {once:false}); sensorStatus.textContent='기기 센서 활성'; modeStatus.textContent='센서(기기)'; }catch(e){ alert('센서를 사용할 수 없습니다. 데모 모드 사용'); } },
+    _syncOffsets(){ document.getElementById('yawOffset').value=String(Math.round(rad2deg(yawOffsetRad))); yawOffsetVal.textContent=String(Math.round(rad2deg(yawOffsetRad))); document.getElementById('altOffset').value=String(Math.round(rad2deg(altOffsetRad))); altOffsetVal.textContent=String(Math.round(rad2deg(altOffsetRad))); },
+    _syncTime(){ const h=timeOffsetMs/3600000; document.getElementById('timeOffset').value=String(h); timeOffsetVal.textContent=(h>=0?'+':'')+h.toFixed(2)+'h'; },
+    _syncFov(){ document.getElementById('fov').value=String(Math.round(fovDeg)); fovVal.textContent=String(Math.round(fovDeg)); },
+  };
+})();
+</script>
+</body>
+</html>
+
