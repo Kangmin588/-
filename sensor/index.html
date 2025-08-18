@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>SensorSky - 사용자 별목록 + 시리얼(USB) + 화각(FOV)</title>
+<style>
+html,body{margin:0;padding:0;height:100%;background:#000;color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans,Ubuntu,Cantarell,Helvetica,Arial}
+#scene{position:fixed;top:0;left:0;width:100vw;height:100vh;display:block;z-index:0}
+#ui{position:fixed;top:0;left:0;padding:12px;width:100%;box-sizing:border-box;z-index:10;pointer-events:auto}
+.panel{background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 10px;margin-bottom:8px;max-width:900px}
+button{background:#1e1e1e;color:#eaeaea;border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:8px 12px;margin-right:6px;cursor:pointer}
+button:hover{background:#2a2a2a}
+label,input,span{font-size:14px}
+.status div{margin:2px 0}
+#dbg{position:fixed;left:8px;bottom:8px;z-index:20;color:#7CFC00;font:12px/1.35 monospace;white-space:pre-wrap;max-width:95vw;pointer-events:none}
+/* Assist sidebar */
+#assistPanel{position:fixed;top:0;right:0;height:100vh;width:min(560px,95vw);background:#0f162a;border-left:1px solid rgba(255,255,255,.15);z-index:30;transform:translateX(100%);transition:transform .3s ease;display:flex;flex-direction:column}
+#assistPanel.open{transform:translateX(0)}
+#assistPanelHeader{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.12)}
+#assistPanelHeader .title{font-weight:600}
+#assistPanel iframe{flex:1;border:0;width:100%}
+#assistResizer{position:absolute;top:0;left:-6px;width:6px;height:100%;cursor:ew-resize;background:transparent}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="panel">
+    <button onclick="SKY.enableDeviceSensors()">센서 활성화(기기)</button>
+    <button onclick="SKY.connectSerial()">시리얼 연결(USB)</button>
+    <button onclick="SKY.setDemo()">데모 모드</button>
+    <button onclick="SKY.calibrateNorth()">북쪽 보정</button>
+    <button onclick="SKY.resetAll()">리셋</button>
+    <button onclick="SKY.toggleAssistant(true)">관측 보조도구</button>
+    <button onclick="SKY.toggleFullscreen()">전체화면</button>
+  </div>
+  <div class="panel status">
+    <div>위치: <span id="locationText">인천(37.4563°, 126.7052°)</span></div>
+    <div>시간(시뮬레이션): <span id="timeText">-</span></div>
+    <div>센서: <span id="sensorStatus">비활성</span> · 모드: <span id="modeStatus">데모</span></div>
+    <div>방위(Y): <span id="yawText">0°</span> · 고도(P): <span id="pitchText">0°</span></div>
+  </div>
+  <div class="panel">
+    <label>방위각 보정(°):
+      <input id="yawOffset" type="range" min="-180" max="180" step="1" value="0" oninput="SKY.onYawOffset(this.value)">
+      <span id="yawOffsetVal">0</span>
+    </label>
+    <br/>
+    <label>고도 보정(°):
+      <input id="altOffset" type="range" min="-90" max="90" step="1" value="0" oninput="SKY.onAltOffset(this.value)">
+      <span id="altOffsetVal">0</span>
+    </label>
+    <br/>
+    <label>시간 오프셋(시간):
+      <input id="timeOffset" type="range" min="-12" max="12" step="0.25" value="0" oninput="SKY.onTimeOffset(this.value)">
+      <span id="timeOffsetVal">+0.00h</span>
+    </label>
+    <br/>
+    <label>화각(FOV, °):
+      <input id="fov" type="range" min="30" max="120" step="1" value="90" oninput="SKY.onFov(this.value)">
+      <span id="fovVal">90</span>
+    </label>
+    <span style="opacity:.8; margin-left:10px">시리얼은 <b>https</b> 또는 <b>localhost</b>에서만 동작</span>
+  </div>
+</div>
+<canvas id="scene"></canvas>
+<div id="dbg">init…</div>
+<div id="assistPanel" aria-hidden="true">
+  <div id="assistPanelHeader">
+    <div class="title">관측 보조도구</div>
+    <button onclick="SKY.toggleAssistant(false)">닫기</button>
+  </div>
+  <div id="assistResizer" title="가로 크기 조절"></div>
+  <iframe id="assistFrame" title="관측 보조도구" loading="lazy" allow="serial"></iframe>
+</div>
+
+<script>
+(() => {
+  const LABEL_MAG_LIMIT = 8.0;
+  const LOAD_MAG_LIMIT  = 10.0;
+
+  // 사용자 제공 별목록(중복 제거 포함)
+  const raw = [
+    // 기존 주요항성
+    {n:'시리우스',ra:6.7525,dec:-16.7161,m:-1.46},
+    {n:'카노푸스',ra:6.4290,dec:-52.6951,m:-0.74},
+    {n:'아크투루스',ra:14.2580,dec:19.1824,m:-0.05},
+    {n:'베가',ra:18.6156,dec:38.7837,m:0.03},
+    {n:'리겔',ra:5.1424,dec:-8.2016,m:0.13},
+    {n:'카펠라',ra:5.2346,dec:45.9976,m:0.08},
+    {n:'베텔게우스',ra:5.9195,dec:7.4071,m:0.50},
+    {n:'아케르나르',ra:1.3853,dec:-57.2372,m:0.45},
+    {n:'알타이르',ra:19.8460,dec:8.8683,m:0.77},
+    {n:'데네브',ra:20.6905,dec:45.2803,m:1.25},
+    {n:'레굴루스',ra:10.1340,dec:11.9670,m:1.36},
+    {n:'폴룩스',ra:7.7554,dec:28.0261,m:1.15},
+    {n:'카스토르',ra:7.5700,dec:31.9000,m:1.58},
+    {n:'데네볼라',ra:11.8200,dec:14.5700,m:2.14},
+    {n:'안타레스',ra:16.4800,dec:-26.4300,m:1.06},
+    {n:'미자르',ra:13.4000,dec:54.9200,m:2.23},
+    {n:'알골',ra:3.1300,dec:40.9600,m:2.09},
+    {n:'폴라리스',ra:2.5303,dec:89.2641,m:1.98},
+    {n:'알비레오',ra:19.5350,dec:27.9620,m:3.05},
+    {n:'미라',ra:2.4578,dec:-3.0100,m:3.40},
+    {n:'알마크',ra:2.3551,dec:42.4285,m:2.10},
+    {n:'쉐다르',ra:0.6751,dec:56.5374,m:2.24},
+    {n:'카프',ra:0.1528,dec:59.1502,m:2.28},
+    {n:'나비',ra:0.9451,dec:60.7167,m:2.47},
+    {n:'루흐바흐',ra:1.4200,dec:60.2400,m:2.68},
+    {n:'세긴',ra:1.9066,dec:63.6700,m:3.37},
+
+    // 양자리
+    {n:'하말',ra:2.1200,dec:23.5000,m:2.00},
+    {n:'셰라탄',ra:1.9000,dec:20.8000,m:2.64},
+    {n:'메사르팀',ra:1.8800,dec:19.3000,m:3.90},
+    // 황소자리
+    {n:'알데바란',ra:4.5800,dec:16.5100,m:0.85},
+    {n:'엘나트',ra:5.4400,dec:28.6000,m:1.65},
+    {n:'알키오네',ra:3.7800,dec:24.1000,m:2.85},
+    {n:'아틀라스',ra:3.8200,dec:24.4000,m:3.60},
+    {n:'일렉트라',ra:3.7300,dec:24.1000,m:3.70},
+    {n:'마이아',ra:3.9500,dec:24.4000,m:3.90},
+    {n:'타이게타',ra:4.0700,dec:24.1000,m:4.30},
+    {n:'메로페',ra:3.7700,dec:23.9000,m:4.20},
+    {n:'플레이오네',ra:3.8200,dec:24.1000,m:5.10},
+    // 쌍둥이자리
+    {n:'카스토르',ra:7.5700,dec:31.9000,m:1.58},
+    {n:'폴룩스',ra:7.7500,dec:28.0000,m:1.14},
+    {n:'알헤나',ra:6.6300,dec:16.4000,m:1.93},
+    {n:'와사트',ra:7.3300,dec:21.9800,m:3.50},
+    {n:'메브수타',ra:6.7300,dec:25.1000,m:3.00},
+    // 게자리
+    {n:'아큐벤스',ra:8.9700,dec:11.9000,m:4.26},
+    {n:'아셀루스 보레알리스',ra:8.7700,dec:21.5000,m:4.65},
+    {n:'아셀루스 아우스트랄리스',ra:8.6500,dec:18.1000,m:3.94},
+    // 사자자리
+    {n:'레굴루스',ra:10.1300,dec:11.9700,m:1.35},
+    {n:'데네볼라',ra:11.8200,dec:14.6000,m:2.14},
+    {n:'알지에바',ra:10.3300,dec:19.8500,m:2.00},
+    {n:'조스마',ra:11.2500,dec:20.5000,m:2.56},
+    {n:'아다페라',ra:11.2400,dec:23.8000,m:3.43},
+    // 처녀자리
+    {n:'스피카',ra:13.4200,dec:-11.1500,m:1.00},
+    {n:'빈데미아트릭스',ra:13.0300,dec:10.9600,m:2.85},
+    {n:'포리마',ra:12.6800,dec:-1.4500,m:3.39},
+    {n:'헤제',ra:13.5600,dec:-0.6000,m:3.36},
+    {n:'자니아',ra:13.0400,dec:-0.6000,m:3.89},
+    // 천칭자리
+    {n:'주벤엘게누비',ra:14.8300,dec:-16.0000,m:2.75},
+    {n:'주벤에샤말리',ra:15.2800,dec:-9.4000,m:2.61},
+    {n:'브라키움',ra:15.5800,dec:-14.8000,m:3.91},
+    // 전갈자리
+    {n:'안타레스',ra:16.4800,dec:-26.4300,m:1.09},
+    {n:'샤울라',ra:17.5700,dec:-37.1000,m:1.62},
+    {n:'사르가스',ra:17.6200,dec:-42.9000,m:1.86},
+    {n:'아크라브',ra:16.0800,dec:-19.8000,m:2.62},
+    {n:'주바',ra:16.0000,dec:-22.6000,m:2.29},
+    {n:'자브바',ra:16.1000,dec:-20.7000,m:4.00},
+    {n:'알니야트',ra:16.3500,dec:-25.6000,m:2.88},
+    {n:'레사스',ra:17.5000,dec:-37.3000,m:2.70},
+    // 사수자리
+    {n:'카우스 아우스트랄리스',ra:18.4000,dec:-34.4000,m:1.85},
+    {n:'카우스 메디아',ra:18.3300,dec:-29.8000,m:2.72},
+    {n:'카우스 보레알리스',ra:18.4500,dec:-25.4000,m:2.82},
+    {n:'눈키',ra:18.9200,dec:-26.3000,m:2.05},
+    {n:'아셀라',ra:18.7500,dec:-29.8000,m:2.59},
+    // 염소자리
+    {n:'데네브 알게디',ra:21.7800,dec:-16.1000,m:2.85},
+    {n:'나시라',ra:21.6700,dec:-16.7000,m:3.68},
+    {n:'다비흐',ra:20.3500,dec:-14.8000,m:3.05},
+    {n:'알게디',ra:20.3000,dec:-12.5000,m:3.58},
+    // 물병자리
+    {n:'사달멜리크',ra:22.1000,dec:-0.3000,m:2.96},
+    {n:'사달수우드',ra:21.5200,dec:-5.6000,m:2.90},
+    {n:'스카트',ra:22.9200,dec:-15.8000,m:3.27},
+    {n:'알발리',ra:20.7800,dec:-9.5000,m:3.77},
+    // 물고기자리
+    {n:'알레샤',ra:2.0400,dec:2.8000,m:3.82},
+    {n:'푸말사마카',ra:23.1800,dec:3.3000,m:4.49},
+    {n:'토르쿨라리스',ra:1.9000,dec:3.0000,m:4.44},
+    // 오리온자리(기존 포함 보완)
+    {n:'벨라트릭스',ra:5.4400,dec:6.3500,m:1.64},
+    {n:'사이프',ra:5.7800,dec:-9.7000,m:2.06},
+    {n:'알니타크',ra:5.6900,dec:-1.9400,m:1.74},
+    {n:'알닐람',ra:5.6000,dec:-1.2000,m:1.69},
+    {n:'민타카',ra:5.5300,dec:-0.3000,m:2.25},
+    {n:'메이사',ra:5.5800,dec:9.9300,m:3.54},
+    // 큰곰자리
+    {n:'두베',ra:11.0500,dec:61.7500,m:1.79},
+    {n:'메라크',ra:11.0200,dec:56.3800,m:2.37},
+    {n:'페크다',ra:11.9000,dec:53.6900,m:2.44},
+    {n:'메그레즈',ra:12.2500,dec:57.0200,m:3.31},
+    {n:'알리오스',ra:12.9000,dec:55.9600,m:1.76},
+    {n:'알카이드',ra:13.8000,dec:49.3100,m:1.84},
+    // 작은곰자리
+    {n:'코카브',ra:14.8300,dec:74.1600,m:2.07},
+    {n:'페르카드',ra:15.3500,dec:71.8300,m:3.00},
+    // 카시오페이아자리(기존 포함 보완)
+    {n:'카시오페이아 감마',ra:0.9300,dec:60.7200,m:2.47},
+    // 백조자리(알비레오 기존 포함)
+    {n:'사드르',ra:20.3700,dec:40.2600,m:2.23},
+    {n:'지에나흐',ra:20.7700,dec:33.9700,m:2.48},
+    // 독수리자리(알타이르 기존)
+    {n:'타라제드',ra:19.7800,dec:10.6100,m:2.72},
+    {n:'알샤인',ra:19.9200,dec:6.4100,m:3.71},
+    // 거문고자리(베가 기존)
+    {n:'셀리아크',ra:18.8300,dec:33.3600,m:3.52},
+    {n:'술라파트',ra:18.9800,dec:32.6900,m:3.25},
+    // 페르세우스자리(알골 기존)
+    {n:'미르팍',ra:3.4000,dec:49.8600,m:1.79},
+    {n:'아틱',ra:2.7300,dec:49.0600,m:3.40},
+    // 안드로메다자리(알마크 기존)
+    {n:'알페라츠',ra:0.1300,dec:29.0900,m:2.06},
+    {n:'미라크',ra:1.1700,dec:35.6200,m:2.06},
+    // 목동자리(아크투루스 기존)
+    {n:'네카르',ra:15.0000,dec:40.3900,m:3.50},
+    {n:'세기누스',ra:14.5300,dec:38.3100,m:3.00},
+    // 머리털자리
+    {n:'디아뎀',ra:13.1700,dec:17.5300,m:4.32},
+    // 페가수스자리
+    {n:'마르카브',ra:23.0700,dec:15.2100,m:2.49},
+    {n:'셰아트',ra:23.0500,dec:28.0800,m:2.42},
+    {n:'알게니브',ra:0.2200,dec:15.1800,m:2.83},
+    // 센타우루스자리
+    {n:'리길 켄타우루스',ra:14.6500,dec:-60.8300,m:-0.27},
+    {n:'하다르',ra:14.0700,dec:-60.3700,m:0.61},
+    // 남십자자리
+    {n:'아크룩스',ra:12.4500,dec:-63.1000,m:0.77},
+    {n:'미모사',ra:12.8000,dec:-59.6900,m:1.25},
+    {n:'가크룩스',ra:12.5200,dec:-57.1100,m:1.63},
+    {n:'이마이',ra:12.2700,dec:-58.7500,m:2.79},
+    // 공작자리
+    {n:'피콕',ra:20.4300,dec:-56.7400,m:1.94},
+    // 큰부리새자리
+    {n:'알파 투카나',ra:22.3000,dec:-60.2600,m:2.86},
+    {n:'베타 투카나',ra:22.3200,dec:-62.9400,m:4.37},
+    // 용골자리
+    {n:'카노푸스',ra:6.4000,dec:-52.7000,m:-0.74},
+    {n:'미아플라시두스',ra:9.2200,dec:-69.7200,m:1.67},
+    {n:'아비오르',ra:8.3800,dec:-59.5100,m:1.86},
+    {n:'아스피디스케',ra:9.2800,dec:-59.2800,m:2.21},
+    // 남쪽삼각형자리
+    {n:'아트리아',ra:16.8000,dec:-69.0300,m:1.91},
+    {n:'베타 TrA',ra:15.9200,dec:-63.4300,m:2.85},
+    {n:'감마 TrA',ra:16.3000,dec:-68.6200,m:2.87}
+  ];
+  const seen = new Set();
+  const stars = [];
+  for (const s of raw) {
+    const key = `${s.n}|${s.ra}|${s.dec}`;
+    if (!seen.has(key)) { seen.add(key); stars.push(s); }
+  }
+
+  const dbg = document.getElementById('dbg');
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  const locationText = document.getElementById('locationText');
+  const timeText = document.getElementById('timeText');
+  const sensorStatus = document.getElementById('sensorStatus');
+  const modeStatus = document.getElementById('modeStatus');
+  const yawOffsetVal = document.getElementById('yawOffsetVal');
+  const altOffsetVal = document.getElementById('altOffsetVal');
+  const timeOffsetVal = document.getElementById('timeOffsetVal');
+  const yawText = document.getElementById('yawText');
+  const pitchText = document.getElementById('pitchText');
+  const fovVal = document.getElementById('fovVal');
+
+  let DPR = Math.min(window.devicePixelRatio || 1, 2), W=0, H=0;
+  let sensorSource = 'demo';
+  let yawRad=0, pitchRad=0, yawOffsetRad=0, altOffsetRad=0, timeOffsetMs=0;
+  let fovDeg = 90; // 화각
+  let observerLatDeg = 37.4563;
+  let observerLonDeg = 126.7052;
+
+  // Serial
+  let serialReader=null, serialBuffer='';
+
+  window.addEventListener('resize', resize); resize();
+  function resize(){ DPR=Math.min(window.devicePixelRatio||1,2); W=Math.floor(innerWidth*DPR); H=Math.floor(innerHeight*DPR); canvas.width=W; canvas.height=H; canvas.style.width=(W/DPR)+'px'; canvas.style.height=(H/DPR)+'px'; }
+
+  // 수학/천문
+  const deg2rad=d=>d*Math.PI/180, rad2deg=r=>r*180/Math.PI;
+  const wrap=a=>{const t=2*Math.PI; return ((a%t)+t)%t};
+  const h2rad=h=>h*(Math.PI/12);
+  function julianDate(date){ const Y=date.getUTCFullYear(),M=date.getUTCMonth()+1,D=date.getUTCDate(); const a=Math.floor((14-M)/12),y=Y+4800-a,m=M+12*a-3; const JDN=D+Math.floor((153*m+2)/5)+365*y+Math.floor(y/4)-Math.floor(y/100)+Math.floor(y/400)-32045; const frac=(date.getUTCHours()-12)/24+date.getUTCMinutes()/1440+date.getUTCSeconds()/86400+date.getUTCMilliseconds()/86400000; return JDN+frac; }
+  function lstRad(date, lonDeg){ const jd=julianDate(date),t=(jd-2451545.0)/36525.0; let gmst=6.697374558+2400.051336*t+0.000025862*t*t+(date.getUTCHours()+date.getUTCMinutes()/60+date.getUTCSeconds()/3600)*1.0027379093; gmst=((gmst%24)+24)%24; return h2rad(((gmst+lonDeg/15)%24+24)%24); }
+  function eqToHor(raH, decD, latD, lonD, date){ const ra=h2rad(raH), dec=deg2rad(decD), la=deg2rad(latD), LST=lstRad(date,lonD), HA=wrap(LST-ra); const sinAlt=Math.sin(dec)*Math.sin(la)+Math.cos(dec)*Math.cos(la)*Math.cos(HA); const alt=Math.asin(sinAlt); const y=-Math.cos(dec)*Math.sin(HA); const x=Math.sin(dec)*Math.cos(la)-Math.cos(dec)*Math.sin(la)*Math.cos(HA); const az=wrap(Math.atan2(y,x)); return {az,alt}; }
+  const horToVec=(az,alt)=>({x:Math.cos(alt)*Math.sin(az), y:Math.sin(alt), z:Math.cos(alt)*Math.cos(az)});
+  function toCamera(v,yaw,pitch){ const cy=Math.cos(-yaw),sy=Math.sin(-yaw); let x=v.x*cy+v.z*sy, y=v.y, z=-v.x*sy+v.z*cy; const p=Math.max(deg2rad(-89),Math.min(deg2rad(89),pitch)); const cx=Math.cos(-p),sx=Math.sin(-p); const y2=y*cx - z*sx, z2=y*sx + z*cx; return {x:x,y:y2,z:z2}; }
+  function project(v){
+    if(v.z<=0) return null;
+    const f = (Math.min(W,H)/2) / Math.tan(deg2rad(fovDeg/2));
+    return {x:(W/2)+(v.x*f/v.z), y:(H/2)-(v.y*f/v.z)};
+  }
+  function magToSize(m){ const n=1-Math.min(Math.max((m-(-1.46))/(LOAD_MAG_LIMIT-(-1.46)),0),1); return 0.9+2.6*Math.pow(n,1.2); }
+  function drawLabel(text,x,y){ ctx.save(); ctx.font=`${Math.round(12*DPR)}px system-ui,-apple-system,Segoe UI,Roboto,sans-serif`; ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.lineWidth=2*DPR; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.fillStyle='rgba(230,240,255,0.95)'; ctx.strokeText(text,x,y); ctx.fillText(text,x,y); ctx.restore(); }
+  function hud(){ const r=36*DPR,cx=W-(r+14*DPR),cy=r+14*DPR; ctx.save(); ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=2*DPR; ctx.stroke(); ctx.font=`${Math.round(12*DPR)}px system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='rgba(255,255,255,0.8)'; ctx.fillText('N',cx,cy-r+10*DPR); const hdg=wrap(yawRad+yawOffsetRad); const ax=cx+Math.sin(hdg)*(r-6*DPR), ay=cy-Math.cos(hdg)*(r-6*DPR); ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(ax,ay); ctx.strokeStyle='rgba(255,80,80,0.9)'; ctx.lineWidth=3*DPR; ctx.stroke(); ctx.restore(); }
+
+  function draw(now){
+    const sim=new Date(Date.now()+timeOffsetMs);
+    if(!now||now%500<16){ timeText.textContent=sim.toLocaleString(); yawText.textContent=Math.round(rad2deg(wrap(yawRad+yawOffsetRad)))+'°'; pitchText.textContent=Math.round(rad2deg(pitchRad+altOffsetRad))+'°'; }
+    ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,W,H);
+    const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#00030A'); g.addColorStop(1,'#000'); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    let drawn=0,visible=0;
+    for(const s of stars){
+      if(s.m>LOAD_MAG_LIMIT) continue;
+      const h=eqToHor(s.ra,s.dec,observerLatDeg,observerLonDeg,sim);
+      if(h.alt<=0) continue; visible++;
+      const v=horToVec(h.az,h.alt); const cam=toCamera(v,wrap(yawRad+yawOffsetRad),pitchRad+altOffsetRad); const p=project(cam); if(!p) continue;
+      const r=magToSize(s.m)*DPR; ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fillStyle='rgba(200,220,255,.95)'; ctx.fill(); drawn++;
+      if(s.m<=LABEL_MAG_LIMIT && s.n) drawLabel(s.n,p.x+r+4*DPR,p.y);
+    }
+    hud(); requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+
+  if('geolocation' in navigator){
+    navigator.geolocation.getCurrentPosition(pos=>{ observerLatDeg=pos.coords.latitude; observerLonDeg=pos.coords.longitude; locationText.textContent=`${observerLatDeg.toFixed(4)}°, ${observerLonDeg.toFixed(4)}°`; },()=>{}, {enableHighAccuracy:true,maximumAge:30000,timeout:8000});
+  }
+
+  document.getElementById('dbg').textContent=`별 ${stars.length}개 로드됨`;
+
+  // 공개 API
+  window.SKY = {
+    setDemo(){ sensorSource='demo'; sensorStatus.textContent='비활성'; modeStatus.textContent='데모'; },
+    calibrateNorth(){ const currentYaw=wrap(yawRad+yawOffsetRad); yawOffsetRad+=-currentYaw; this._syncOffsets(); },
+    resetAll(){
+      yawOffsetRad=0; altOffsetRad=0; timeOffsetMs=0; yawRad=0; pitchRad=0; fovDeg=90;
+      this._syncOffsets(); this._syncTime(); this._syncFov();
+    },
+    onYawOffset(v){ const d=Number(v); yawOffsetVal.textContent=String(d); yawOffsetRad=deg2rad(d); },
+    onAltOffset(v){ const d=Number(v); altOffsetVal.textContent=String(d); altOffsetRad=deg2rad(d); },
+    onTimeOffset(v){ const h=Number(v); timeOffsetMs=h*3600000; timeOffsetVal.textContent=(h>=0?'+':'')+h.toFixed(2)+'h'; },
+    onFov(v){ fovDeg = Math.max(30, Math.min(120, Number(v))); fovVal.textContent = String(Math.round(fovDeg)); },
+    async enableDeviceSensors(){
+      try{
+        if(typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission==='function'){
+          const res=await DeviceOrientationEvent.requestPermission(); if(res!=='granted'){ alert('센서 권한을 허용해 주세요.'); return; }
+        }
+        window.addEventListener('deviceorientation', e=>{
+          if(e.absolute===true || e.webkitCompassHeading!=null){
+            const hd = e.webkitCompassHeading!=null ? e.webkitCompassHeading : (e.alpha!=null ? (360-e.alpha):null);
+            if(hd!=null) yawRad=deg2rad(hd);
+          } else if(e.alpha!=null){ yawRad=deg2rad(360-e.alpha); }
+          if(e.beta!=null){ const beta=e.beta; pitchRad=Math.max(deg2rad(-80),Math.min(deg2rad(80),deg2rad(beta))); }
+        }, {once:false});
+        sensorStatus.textContent='기기 센서 활성'; modeStatus.textContent='센서(기기)';
+      }catch(e){ alert('센서를 사용할 수 없습니다. 데모 모드 사용'); }
+    },
+    async connectSerial(){
+      try{
+        if(!('serial' in navigator)){ alert('Web Serial 미지원(Chrome 필요)'); return; }
+        if(location.protocol!=='https:' && location.hostname!=='localhost'){ alert('Web Serial은 https 또는 localhost 필요'); return; }
+        const port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        serialReader = port.readable.getReader();
+        sensorStatus.textContent='시리얼 연결됨'; modeStatus.textContent='센서(시리얼)'; 
+        const decoder = new TextDecoder(); serialBuffer='';
+        while(true){
+          const { value, done } = await serialReader.read();
+          if(done) break;
+          serialBuffer += decoder.decode(value);
+          let idx;
+          while((idx = serialBuffer.indexOf('\n')) >= 0){
+            const line = serialBuffer.slice(0, idx).trim();
+            serialBuffer = serialBuffer.slice(idx+1);
+            parseOrientationLine(line);
+          }
+        }
+      }catch(e){ console.error(e); alert('시리얼 연결 실패: '+e.message); }
+    },
+    _syncOffsets(){ document.getElementById('yawOffset').value=String(Math.round(rad2deg(yawOffsetRad))); yawOffsetVal.textContent=String(Math.round(rad2deg(yawOffsetRad))); document.getElementById('altOffset').value=String(Math.round(rad2deg(altOffsetRad))); altOffsetVal.textContent=String(Math.round(rad2deg(altOffsetRad))); },
+    _syncTime(){ const h=timeOffsetMs/3600000; document.getElementById('timeOffset').value=String(h); timeOffsetVal.textContent=(h>=0?'+':'')+h.toFixed(2)+'h'; },
+    _syncFov(){ document.getElementById('fov').value = String(Math.round(fovDeg)); fovVal.textContent = String(Math.round(fovDeg)); },
+    toggleAssistant(open){ setAssistOpen(open==null ? !assistOpen : !!open); }
+  };
+
+  // 시리얼 데이터 파서(YPR/HEADING)
+  function parseOrientationLine(line){
+    let m = line.match(/^YPR\s*:\s*([-+]?\d+(?:\.\d+)?)\s*[,\s]+([-+]?\d+(?:\.\d+)?)\s*[,\s]+([-+]?\d+(?:\.\d+)?)/i);
+    if(m){ const yawDeg=parseFloat(m[1]), pitchDeg=parseFloat(m[2]); yawRad=deg2rad(yawDeg); pitchRad=Math.max(deg2rad(-80),Math.min(deg2rad(80),deg2rad(pitchDeg))); return; }
+    m = line.match(/^HEADING\s*:\s*([-+]?\d+(?:\.\d+)?)/i);
+    if(m){ yawRad=deg2rad(parseFloat(m[1])); }
+  }
+
+  // Assist panel logic
+  let assistOpen=false;
+  function setAssistOpen(open){
+    assistOpen=!!open;
+    const panel=document.getElementById('assistPanel');
+    if(!panel) return;
+    panel.classList.toggle('open', assistOpen);
+    panel.setAttribute('aria-hidden', assistOpen? 'false':'true');
+    if(assistOpen){
+      if (typeof assistWidthPx === 'number') { panel.style.width = assistWidthPx + 'px'; }
+      const frame=document.getElementById('assistFrame');
+      if(frame && !frame.src){ const src=(location.protocol==='file:')?'../plotly/index.html':'../plotly/'; frame.src=src; }
+    }
+  }
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape' && assistOpen){ setAssistOpen(false); } });
+
+  // Assist panel resizer + width persistence
+  const assistPanel = document.getElementById('assistPanel');
+  const assistFrame = document.getElementById('assistFrame');
+  const storedWidth = localStorage.getItem('assistWidthPx');
+  let assistWidthPx = storedWidth ? Math.max(300, Math.min(parseInt(storedWidth,10)||420, Math.floor(window.innerWidth*0.95))) : 420;
+  window.addEventListener('resize', () => {
+    assistWidthPx = Math.min(assistWidthPx, Math.floor(window.innerWidth*0.95));
+    if (assistPanel) assistPanel.style.width = assistWidthPx + 'px';
+  });
+  const resizer = document.getElementById('assistResizer');
+  let resizing = false;
+  if (resizer) {
+    resizer.addEventListener('pointerdown', e => { resizing = true; resizer.setPointerCapture(e.pointerId); });
+    resizer.addEventListener('pointermove', e => {
+      if (!resizing) return;
+      const maxW = Math.floor(window.innerWidth * 0.95);
+      const newW = Math.max(300, Math.min(maxW, Math.round(window.innerWidth - e.clientX)));
+      assistWidthPx = newW;
+      assistPanel.style.width = newW + 'px';
+    });
+    resizer.addEventListener('pointerup', e => { if (!resizing) return; resizing = false; resizer.releasePointerCapture(e.pointerId); localStorage.setItem('assistWidthPx', String(assistWidthPx)); });
+    resizer.addEventListener('dblclick', () => { assistWidthPx = (assistWidthPx < 500) ? 560 : 380; assistWidthPx = Math.min(assistWidthPx, Math.floor(window.innerWidth*0.95)); assistPanel.style.width = assistWidthPx + 'px'; localStorage.setItem('assistWidthPx', String(assistWidthPx)); });
+  }
+
+  // Fullscreen
+  if (!window.SKY) window.SKY = {};
+  window.SKY.toggleFullscreen = function(){
+    const el = document.documentElement;
+    if (!document.fullscreenElement) {
+      (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen || function(){}) .call(el);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen || function(){}) .call(document);
+    }
+  };
+})();
+</script>
+</body>
+</html>
