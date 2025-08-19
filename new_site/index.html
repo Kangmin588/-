@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>통합 천체관측 도구</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<style>
+html,body{margin:0;padding:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans,Ubuntu,Cantarell,Helvetica,Arial;background:#0b1220;color:#eaeaea;height:100%}
+.container{max-width:960px;margin:0 auto;padding:32px}
+.card{background:#0f162a;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:20px;margin:14px 0}
+.btn{display:inline-block;padding:10px 14px;border-radius:8px;background:#1f6feb;color:#fff;text-decoration:none;margin-right:10px}
+.btn:hover{background:#2b7bff}
+.hint{opacity:.8;font-size:14px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>통합 천체관측 도구</h1>
+  <p class="hint">두 앱을 하나의 사이트에 모았습니다. 아래 버튼으로 이동하세요.</p>
+  <div class="card">
+    <h2>Plotly 기반 지평좌표계 인터페이스</h2>
+    <p>천체 선택, 시뮬레이션 슬라이더, Web Serial(로컬/HTTPS).</p>
+    <a class="btn" href="./plotly/">열기</a>
+  </div>
+  <div class="card">
+    <h2>센서 스카이(Canvas 렌더)</h2>
+    <p>사용자 별목록, 기기 센서/시리얼 연동, FOV 조절.</p>
+    <a class="btn" href="./sensor/">열기</a>
+  </div>
+</div>
+</body>
+</html>
+
