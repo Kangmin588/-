@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>SensorSky - 센서/시리얼 + 보조도구 연동</title>
+<style>
+html,body{margin:0;padding:0;height:100%;background:#000;color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans,Ubuntu,Cantarell,Helvetica,Arial}
+#scene{position:fixed;top:0;left:0;width:100vw;height:100vh;display:block;z-index:0}
+#ui{position:fixed;top:0;left:0;padding:12px;width:100%;box-sizing:border-box;z-index:10;pointer-events:auto}
+.panel{background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 10px;margin-bottom:8px;max-width:980px}
+button{background:#1e1e1e;color:#eaeaea;border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:8px 12px;margin-right:6px;cursor:pointer}
+button:hover{background:#2a2a2a}
+label,input,span{font-size:14px}
+.status div{margin:2px 0}
+#assistPanel{position:fixed;top:0;right:0;height:100vh;width:min(560px,95vw);background:#0f162a;border-left:1px solid rgba(255,255,255,.15);z-index:30;transform:translateX(100%);transition:transform .2s ease;display:flex;flex-direction:column;box-shadow:-8px 0 16px rgba(0,0,0,.35)}
+#assistPanel.open{transform:translateX(0)}
+#assistPanelHeader{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.12)}
+#assistPanel iframe{flex:1;border:0;width:100%}
+#assistResizer{position:absolute;top:0;left:-6px;width:6px;height:100%;cursor:ew-resize;background:transparent}
+</style></head>
+<body>
+<div id="ui">
+  <div class="panel">
+    <button id="btnSensors">기기 센서</button>
+    <button id="btnSerial">시리얼 연결(USB)</button>
+    <button id="btnDemo">데모</button>
+    <button id="btnCalib">북쪽 보정</button>
+    <button id="btnReset">리셋</button>
+    <button id="btnAssist">보조도구</button>
+    <span style="opacity:.85;margin-left:10px">Web Serial은 Chrome에서 https 또는 localhost/127.0.0.1 필요</span>
+  </div>
+  <div class="panel status">
+    <div>센서: <span id="sensorStatus">비활성</span> · 모드: <span id="modeStatus">데모</span></div>
+    <div>방위(Y): <span id="yawText">0°</span> · 고도(P): <span id="pitchText">0°</span></div>
+  </div>
+</div>
+<canvas id="scene"></canvas>
+<div id="assistPanel" aria-hidden="true">
+  <div id="assistPanelHeader"><div class="title">관측 보조도구</div><button id="btnAssistClose">닫기</button></div>
+  <div id="assistResizer" title="가로 크기 조절"></div>
+  <iframe id="assistFrame" title="관측 보조도구" loading="lazy" allow="serial"></iframe>
+  
+</div>
+<script>
+(()=>{
+  // ---------- State ----------
+  let DPR=Math.min(devicePixelRatio||1,2),W=0,H=0;
+  let yawRad=0,pitchRad=0,yawOffsetRad=0,altOffsetRad=0,fovDeg=90,timeOffsetMs=0;
+  let demoTimer=null;
+  let serialPort=null,serialReader=null,serialWriter=null,serialConnected=false,serialBuf='';
+  let lastPostTs=0;
+  let observerLatDeg=37.4563,observerLonDeg=126.7052;
+  let assistOpen=false,assistantReady=false,lastQueuedAzAlt=null,assistWidthPx=420,resizing=false;
+
+  // ---------- Elements ----------
+  const canvas=document.getElementById('scene'); const ctx=canvas.getContext('2d');
+  const btnSensors=document.getElementById('btnSensors');
+  const btnSerial=document.getElementById('btnSerial');
+  const btnDemo=document.getElementById('btnDemo');
+  const btnCalib=document.getElementById('btnCalib');
+  const btnReset=document.getElementById('btnReset');
+  const btnAssist=document.getElementById('btnAssist');
+  const btnAssistClose=document.getElementById('btnAssistClose');
+  const sensorStatus=document.getElementById('sensorStatus');
+  const modeStatus=document.getElementById('modeStatus');
+  const yawText=document.getElementById('yawText');
+  const pitchText=document.getElementById('pitchText');
+  const assistPanel=document.getElementById('assistPanel');
+  const assistFrame=document.getElementById('assistFrame');
+  const assistResizer=document.getElementById('assistResizer');
+
+  // ---------- Utilities ----------
+  const d2r=d=>d*Math.PI/180,r2d=r=>r*180/Math.PI,wrap=a=>{const t=2*Math.PI;return ((a%t)+t)%t},h2r=h=>h*(Math.PI/12);
+  function jd(date){ const Y=date.getUTCFullYear(),M=date.getUTCMonth()+1,D=date.getUTCDate(); const a=Math.floor((14-M)/12),y=Y+4800-a,m=M+12*a-3; const JDN=D+Math.floor((153*m+2)/5)+365*y+Math.floor(y/4)-Math.floor(y/100)+Math.floor(y/400)-32045; const frac=(date.getUTCHours()-12)/24+date.getUTCMinutes()/1440+date.getUTCSeconds()/86400+date.getUTCMilliseconds()/86400000; return JDN+frac; }
+  function lstRad(date, lonDeg){ const j=jd(date),t=(j-2451545.0)/36525.0; let gmst=6.697374558+2400.051336*t+0.000025862*t*t+(date.getUTCHours()+date.getUTCMinutes()/60+date.getUTCSeconds()/3600)*1.0027379093; gmst=((gmst%24)+24)%24; return h2r(((gmst+lonDeg/15)%24+24)%24); }
+  function eqToHor(raH, decD, latD, lonD, date){ const ra=h2r(raH), dec=d2r(decD), la=d2r(latD), LST=lstRad(date,lonD), HA=wrap(LST-ra); const sinAlt=Math.sin(dec)*Math.sin(la)+Math.cos(dec)*Math.cos(la)*Math.cos(HA); const alt=Math.asin(sinAlt); const y=-Math.cos(dec)*Math.sin(HA); const x=Math.sin(dec)*Math.cos(la)-Math.cos(dec)*Math.sin(la)*Math.cos(HA); const az=wrap(Math.atan2(y,x)); return {az,alt}; }
+  const horToVec=(az,alt)=>({x:Math.cos(alt)*Math.sin(az), y:Math.sin(alt), z:Math.cos(alt)*Math.cos(az)});
+  function toCamera(v,yaw,pitch){ const cy=Math.cos(-yaw),sy=Math.sin(-yaw); let x=v.x*cy+v.z*sy, y=v.y, z=-v.x*sy+v.z*cy; const p=Math.max(d2r(-89),Math.min(d2r(89),pitch)); const cx=Math.cos(-p),sx=Math.sin(-p); const y2=y*cx - z*sx, z2=y*sx + z*cx; return {x:x,y:y2,z:z2}; }
+  function resize(){ DPR=Math.min(devicePixelRatio||1,2); W=Math.floor(innerWidth*DPR); H=Math.floor(innerHeight*DPR); canvas.width=W; canvas.height=H; canvas.style.width=(W/DPR)+'px'; canvas.style.height=(H/DPR)+'px'; if(assistPanel){ assistWidthPx=Math.min(assistWidthPx, Math.floor(window.innerWidth*0.95)); if(assistOpen) assistPanel.style.width=assistWidthPx+'px'; } }
+  addEventListener('resize',resize); resize();
+
+  // ---------- Sky rendering ----------
+  const starsRaw=[{n:'시리우스',ra:6.7525,dec:-16.7161},{n:'베가',ra:18.6156,dec:38.7837},{n:'알타이르',ra:19.8460,dec:8.8683},{n:'데네브',ra:20.6905,dec:45.2803},{n:'폴라리스',ra:2.5303,dec:89.2641}];
+  function draw(ts){
+    const now=new Date(Date.now()+timeOffsetMs);
+    if(!ts||ts%250<16){ yawText.textContent=Math.round(r2d(wrap(yawRad+yawOffsetRad)))+'°'; pitchText.textContent=Math.round(r2d(pitchRad+altOffsetRad))+'°'; }
+    ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,W,H);
+    const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#00030A'); g.addColorStop(1,'#000'); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    for(const s of starsRaw){
+      const h=eqToHor(s.ra,s.dec,observerLatDeg,observerLonDeg,now); if(h.alt<=0) continue;
+      const v=horToVec(h.az,h.alt); const cam=toCamera(v,wrap(yawRad+yawOffsetRad),pitchRad+altOffsetRad); if(cam.z<=0) continue;
+      const f=(Math.min(W,H)/2)/Math.tan(d2r(fovDeg/2)); const x=(W/2)+(cam.x*f/cam.z), y=(H/2)-(cam.y*f/cam.z);
+      ctx.beginPath(); ctx.arc(x,y,2.6*DPR,0,Math.PI*2); ctx.fillStyle='rgba(200,220,255,.95)'; ctx.fill();
+      ctx.font=`${Math.round(12*DPR)}px system-ui`; ctx.fillStyle='rgba(230,240,255,.95)'; ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=2*DPR; ctx.strokeText(s.n,x+8*DPR,y); ctx.fillText(s.n,x+8*DPR,y);
+    }
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+
+  // ---------- Geolocation ----------
+  if('geolocation' in navigator){ navigator.geolocation.getCurrentPosition(pos=>{ observerLatDeg=pos.coords.latitude; observerLonDeg=pos.coords.longitude; },()=>{}, {enableHighAccuracy:true,maximumAge:30000,timeout:8000}); }
+
+  // ---------- Assistant panel ----------
+  function setAssistOpen(open){
+    assistOpen=!!open; assistPanel.classList.toggle('open',assistOpen); assistPanel.setAttribute('aria-hidden', assistOpen?'false':'true');
+    if(assistOpen && assistFrame && !assistFrame.src){ const src=(location.protocol==='file:')?'../plotly/index.html':'/plotly/'; assistFrame.src=src; }
+    if(assistOpen){ assistPanel.style.width=assistWidthPx+'px'; }
+  }
+  btnAssist.onclick=()=>setAssistOpen(true);
+  btnAssistClose.onclick=()=>setAssistOpen(false);
+  if(assistResizer){
+    assistResizer.addEventListener('pointerdown', e=>{ resizing=true; assistResizer.setPointerCapture(e.pointerId); });
+    assistResizer.addEventListener('pointermove', e=>{ if(!resizing) return; const maxW=Math.floor(window.innerWidth*0.95); const newW=Math.max(300, Math.min(maxW, Math.round(window.innerWidth - e.clientX))); assistWidthPx=newW; assistPanel.style.width=newW+'px'; });
+    assistResizer.addEventListener('pointerup', e=>{ if(!resizing) return; resizing=false; assistResizer.releasePointerCapture(e.pointerId); });
+  }
+  addEventListener('message', e=>{ const d=e.data||{}; if(d.type==='assistantReady'){ assistantReady=true; if(lastQueuedAzAlt){ postToAssistant(lastQueuedAzAlt.az,lastQueuedAzAlt.alt); lastQueuedAzAlt=null; } }});
+  function postToAssistant(az,alt){ if(assistFrame && assistFrame.contentWindow){ assistFrame.contentWindow.postMessage({type:'azAlt',az,alt}, '*'); } }
+  function sendAzAltToAssistant(az,alt){ if(assistantReady){ postToAssistant(az,alt); } else { lastQueuedAzAlt={az,alt}; setAssistOpen(true); } }
+
+  // ---------- Sensors (device) ----------
+  btnSensors.onclick=async ()=>{
+    try{
+      if(typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission==='function'){
+        const res=await DeviceOrientationEvent.requestPermission(); if(res!=='granted'){ alert('센서 권한을 허용해 주세요'); return; }
+      }
+      addEventListener('deviceorientation', e=>{
+        if(e.absolute===true || e.webkitCompassHeading!=null){ const hd=e.webkitCompassHeading!=null?e.webkitCompassHeading:(e.alpha!=null?(360-e.alpha):null); if(hd!=null) yawRad=d2r(hd); }
+        else if(e.alpha!=null){ yawRad=d2r(360-e.alpha); }
+        if(e.beta!=null){ pitchRad=Math.max(d2r(-80),Math.min(d2r(80),d2r(e.beta))); }
+        const now=performance.now(); if(now-lastPostTs>120){ const azDeg=((r2d(wrap(yawRad+yawOffsetRad)))%360+360)%360; const altDeg=Math.max(-90,Math.min(90,r2d(pitchRad+altOffsetRad))); sendAzAltToAssistant(Math.round(azDeg),Math.round(altDeg)); lastPostTs=now; }
+      }, {once:false});
+      sensorStatus.textContent='기기 센서 활성'; modeStatus.textContent='센서(기기)'; setAssistOpen(true);
+    }catch(e){ alert('센서를 사용할 수 없습니다: '+(e&&e.message?e.message:e)); }
+  };
+
+  // ---------- Demo ----------
+  btnDemo.onclick=()=>{
+    if(demoTimer){ clearInterval(demoTimer); demoTimer=null; btnDemo.textContent='데모'; return; }
+    btnDemo.textContent='데모 중지';
+    demoTimer=setInterval(()=>{ const t=Date.now()/1000; const az=(t*12)%360; const alt=30+20*Math.sin(t/2); applyAzAlt(az,alt,true); },120);
+  };
+
+  // ---------- Calibrate / Reset ----------
+  btnCalib.onclick=()=>{ const cur=wrap(yawRad+yawOffsetRad); yawOffsetRad+=-cur; };
+  btnReset.onclick=()=>{ yawOffsetRad=0; altOffsetRad=0; timeOffsetMs=0; yawRad=0; pitchRad=0; fovDeg=90; };
+
+  // ---------- Serial ----------
+  btnSerial.onclick=connectSerial;
+  async function connectSerial(){
+    try{
+      if(!('serial' in navigator)){ alert('Web Serial 미지원(Chrome 필요)'); return; }
+      if(!(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){ alert('https 또는 localhost에서 실행하세요'); return; }
+      const baud=115200; const filters=[{usbVendorId:0x2341},{usbVendorId:0x1A86},{usbVendorId:0x10C4},{usbVendorId:0x0403}];
+      let port; try{ port=await navigator.serial.requestPort({filters}); }catch{ port=await navigator.serial.requestPort(); }
+      await port.open({baudRate:baud});
+      const dec=new TextDecoderStream(), enc=new TextEncoderStream();
+      port.readable.pipeTo(dec.writable).catch(()=>{}); enc.readable.pipeTo(port.writable).catch(()=>{});
+      serialReader=dec.readable.getReader(); serialWriter=enc.writable.getWriter(); serialPort=port; serialConnected=true;
+      sensorStatus.textContent='시리얼 연결됨'; modeStatus.textContent='센서(시리얼)'; setAssistOpen(true);
+      serialBuf='';
+      while(serialConnected && serialReader){
+        const {value,done}=await serialReader.read(); if(done) break;
+        if(value!=null){ serialBuf+=String(value); let i; while((i=serialBuf.indexOf('\n'))>=0){ const line=serialBuf.slice(0,i).replace(/\r+$/,''); serialBuf=serialBuf.slice(i+1); if(line.trim()) parseSerialLine(line.trim()); } }
+      }
+    }catch(e){ console.error(e); alert('시리얼 연결 실패: '+(e&&e.message?e.message:e)); }
+  }
+  function parseSerialLine(line){
+    let m=line.match(/^YPR\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)\s*[, \t]+\s*([-+]?\d+(?:\.\d+)?)\s*[, \t]+\s*([-+]?\d+(?:\.\d+)?)/i);
+    if(m){ const yawDeg=parseFloat(m[1]); const pitchDeg=parseFloat(m[2]); applyAzAlt(((yawDeg%360)+360)%360, Math.max(-90,Math.min(90,pitchDeg)), true); return; }
+    m=line.match(/^HEADING\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)/i);
+    if(m){ const yawDeg=parseFloat(m[1]); applyAzAlt(((yawDeg%360)+360)%360, r2d(pitchRad), true); return; }
+    m=line.match(/AZ\s*[:=\s]\s*([-+]?\d+(?:\.\d+)?)[^\d\-+]+ALT\s*[:=\s]\s*([-+]?\d+(?:\.\d+)?)/i);
+    if(m){ applyAzAlt(parseFloat(m[1]), parseFloat(m[2]), true); return; }
+    const p=line.split(/[\s,]+/).filter(Boolean); if(p.length>=2 && !isNaN(+p[0]) && !isNaN(+p[1])){ applyAzAlt(+p[0], +p[1], true); }
+  }
+
+  // ---------- Synchronization ----------
+  function applyAzAlt(azDeg,altDeg,fromSerial){
+    const az=((azDeg%360)+360)%360; const alt=Math.max(-90,Math.min(90,altDeg));
+    yawRad=d2r(az); pitchRad=d2r(alt);
+    const now=performance.now(); if(now-lastPostTs>100){ sendAzAltToAssistant(az,alt); lastPostTs=now; }
+  }
+
+  // Inform parent (if any)
+  try{ if(window.parent){ window.parent.postMessage({type:'assistantReady'}, '*'); } }catch(_e){}
+})();
+</script>
+</body></html>
+
