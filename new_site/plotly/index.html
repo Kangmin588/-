@@ -54,6 +54,7 @@ a{color:#58a6ff}
       <div class="control-group">
         <h3>천체 선택</h3>
         <select id="objectSelect"><option value="">천체를 선택하세요</option></select>
+        <div class="small" style="margin-top:6px">추가: <button onclick="addTargets()">목표 오브젝트 추가</button></div>
       </div>
       <div class="control-group">
         <h3>중심 이동</h3>
@@ -71,7 +72,7 @@ const OBS_LAT=37.4567, OBS_LON=126.7052, OBS_ELEV=45, THRESHOLD=3.0, FOV=90;
 let azSlider, altSlider, centerAzSlider, centerAltSlider;
 let azValue, altValue, centerAzValue, centerAltValue;
 let objectSelect, demoBtn, homeModeBtn, statusText;
-const objects=[
+let objects=[
   {name:'시리우스',ra:101.2875,dec:-16.7161,type:'star'},
   {name:'카노푸스',ra:95.9879,dec:-52.6957,type:'star'},
   {name:'폴라리스',ra:37.9543,dec:89.2641,type:'star'},
@@ -113,6 +114,21 @@ function init(){
   objectSelect.value=objects[0].name;
   bind(); draw(); setInterval(updateStatus,200);
   if (location.protocol.startsWith('http')) document.getElementById('envHint').style.display='none';
+}
+function addTargets(){
+  const extra=[
+    {name:'M31 안드로메다',ra:10.684,dec:41.269,type:'galaxy'},
+    {name:'M45 플레이아데스',ra:56.75,dec:24.1167,type:'cluster'},
+    {name:'M13 헤라클레스',ra:250.423,dec:36.461,type:'cluster'},
+    {name:'M42 오리온 대성운',ra:83.822,dec:-5.391,type:'nebula'},
+    {name:'M8 라군 성운',ra:270.925,dec:-24.386,type:'nebula'},
+    {name:'M20 삼열 성운',ra:270.691,dec:-23.013,type:'nebula'},
+    {name:'M51 소용돌이 은하',ra:202.482,dec:47.230,type:'galaxy'},
+    {name:'M101 바람개비 은하',ra:210.802,dec:54.349,type:'galaxy'}
+  ];
+  const byName=new Set(objects.map(o=>o.name));
+  for(const o of extra){ if(!byName.has(o.name)){ objects.push(o); const opt=document.createElement('option'); opt.value=o.name; opt.textContent=o.name; objectSelect.appendChild(opt);} }
+  alert('목표 오브젝트가 추가되었습니다.');
 }
 function bind(){
   azSlider.oninput=e=>{currentAz=+e.target.value;azValue.textContent=currentAz+'°';draw();};

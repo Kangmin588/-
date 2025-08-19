@@ -24,6 +24,7 @@ a{color:#58a6ff}
     <button onclick="SKY.setDemo()">데모 모드</button>
     <button onclick="SKY.calibrateNorth()">북쪽 보정</button>
     <button onclick="SKY.resetAll()">리셋</button>
+    <button onclick="SKY.toggleFullscreen()">전체화면</button>
     <button onclick="SKY.toggleAssistant(true)">관측 보조도구</button>
     <a href="../" style="margin-left:6px">홈</a>
   </div>
@@ -145,7 +146,7 @@ a{color:#58a6ff}
     if(!now||now%500<16){ timeText.textContent=sim.toLocaleString(); yawText.textContent=Math.round(rad2deg(wrap(yawRad+yawOffsetRad)))+'°'; pitchText.textContent=Math.round(rad2deg(pitchRad+altOffsetRad))+'°'; }
     ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,W,H);
     const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#00030A'); g.addColorStop(1,'#000'); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
-    for(const s of stars){ if(s.m>LOAD_MAG_LIMIT) continue; const h=eqToHor(s.ra,s.dec,observerLatDeg,observerLonDeg,sim); if(h.alt<=0) continue; const v=horToVec(h.az,h.alt); const cam=toCamera(v,wrap(yawRad+yawOffsetRad),pitchRad+altOffsetRad); const p=project(cam); if(!p) continue; const r=magToSize(s.m)*DPR; ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fillStyle='rgba(200,220,255,.95)'; ctx.fill(); if(s.m<=LABEL_MAG_LIMIT && s.n) drawLabel(s.n,p.x+r+4*DPR,p.y); }
+    for(const s of stars){ if(s.m>LOAD_MAG_LIMIT) continue; const h=eqToHor(s.ra,s.dec,observerLatDeg,observerLonDeg,sim); const below=h.alt<=0; const v=horToVec(h.az, below? 0.02 : h.alt); const cam=toCamera(v,wrap(yawRad+yawOffsetRad),pitchRad+altOffsetRad); const p=project(cam); if(!p) continue; const r=magToSize(s.m)*DPR; ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fillStyle= below? 'rgba(150,170,200,0.25)' : 'rgba(200,220,255,0.95)'; ctx.fill(); if(!below && s.m<=LABEL_MAG_LIMIT && s.n) drawLabel(s.n,p.x+r+4*DPR,p.y); }
     // 행성 그리기
     const planets=getPlanets(sim);
     for(const pinfo of planets){ if(pinfo.m>LOAD_MAG_LIMIT) continue; const h=eqToHor(pinfo.ra,pinfo.dec,observerLatDeg,observerLonDeg,sim); if(h.alt<=0) continue; const v=horToVec(h.az,h.alt); const cam=toCamera(v,wrap(yawRad+yawOffsetRad),pitchRad+altOffsetRad); const pp=project(cam); if(!pp) continue; const r=magToSize(pinfo.m)*DPR*1.15; ctx.beginPath(); ctx.arc(pp.x,pp.y,r,0,Math.PI*2); ctx.fillStyle='rgba(255,220,120,0.95)'; ctx.fill(); drawLabel(pinfo.n, pp.x+r+4*DPR, pp.y); }
@@ -168,6 +169,9 @@ a{color:#58a6ff}
     _syncFov(){ document.getElementById('fov').value=String(Math.round(fovDeg)); fovVal.textContent=String(Math.round(fovDeg)); },
     toggleAssistant(open){ setAssistOpen(open==null ? !assistOpen : !!open); }
   };
+  // 전체화면
+  if(!window.SKY) window.SKY={};
+  window.SKY.toggleFullscreen = function(){ const el=document.documentElement; if(!document.fullscreenElement){ (el.requestFullscreen||el.webkitRequestFullscreen||el.msRequestFullscreen||function(){}).call(el);} else { (document.exitFullscreen||document.webkitExitFullscreen||document.msExitFullscreen||function(){}).call(document);} };
 
   // Assist panel logic
   let assistOpen=false; let assistWidthPx=(function(){ try{ return Math.min(Math.max(parseInt(localStorage.getItem('assistWidthPx')||'420',10),300), Math.floor(window.innerWidth*0.95)); }catch(_){ return 420; } })();
