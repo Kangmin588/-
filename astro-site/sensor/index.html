@@ -22,15 +22,29 @@ label,input,span{font-size:14px}
   <div class="panel">
     <button id="btnSensors">기기 센서</button>
     <button id="btnSerial">시리얼 연결(USB)</button>
+    <select id="baudSelect">
+      <option value="115200" selected>115200</option>
+      <option value="57600">57600</option>
+      <option value="38400">38400</option>
+      <option value="19200">19200</option>
+      <option value="9600">9600</option>
+    </select>
     <button id="btnDemo">데모</button>
     <button id="btnCalib">북쪽 보정</button>
     <button id="btnReset">리셋</button>
     <button id="btnAssist">보조도구</button>
+    <button id="btnFullscreen">전체화면</button>
     <span style="opacity:.85;margin-left:10px">Web Serial은 Chrome에서 https 또는 localhost/127.0.0.1 필요</span>
   </div>
   <div class="panel status">
     <div>센서: <span id="sensorStatus">비활성</span> · 모드: <span id="modeStatus">데모</span></div>
     <div>방위(Y): <span id="yawText">0°</span> · 고도(P): <span id="pitchText">0°</span></div>
+  </div>
+  <div class="panel">
+    <label>방위각 보정(°): <input id="yawOffset" type="range" min="-180" max="180" step="1" value="0"> <span id="yawOffsetVal">0</span></label><br/>
+    <label>고도 보정(°): <input id="altOffset" type="range" min="-90" max="90" step="1" value="0"> <span id="altOffsetVal">0</span></label><br/>
+    <label>시간 보정(시간): <input id="timeOffset" type="range" min="-12" max="12" step="0.25" value="0"> <span id="timeOffsetVal">+0.00h</span></label><br/>
+    <label>화각(FOV, °): <input id="fov" type="range" min="30" max="120" step="1" value="90"> <span id="fovVal">90</span></label>
   </div>
 </div>
 <canvas id="scene"></canvas>
@@ -64,6 +78,16 @@ label,input,span{font-size:14px}
   const modeStatus=document.getElementById('modeStatus');
   const yawText=document.getElementById('yawText');
   const pitchText=document.getElementById('pitchText');
+  const btnFullscreen=document.getElementById('btnFullscreen');
+  const baudSelect=document.getElementById('baudSelect');
+  const yawOffsetInput=document.getElementById('yawOffset');
+  const altOffsetInput=document.getElementById('altOffset');
+  const timeOffsetInput=document.getElementById('timeOffset');
+  const fovInput=document.getElementById('fov');
+  const yawOffsetVal=document.getElementById('yawOffsetVal');
+  const altOffsetVal=document.getElementById('altOffsetVal');
+  const timeOffsetVal=document.getElementById('timeOffsetVal');
+  const fovVal=document.getElementById('fovVal');
   const assistPanel=document.getElementById('assistPanel');
   const assistFrame=document.getElementById('assistFrame');
   const assistResizer=document.getElementById('assistResizer');
@@ -107,6 +131,8 @@ label,input,span{font-size:14px}
   }
   btnAssist.onclick=()=>setAssistOpen(true);
   btnAssistClose.onclick=()=>setAssistOpen(false);
+  btnFullscreen.onclick=()=>{ try{ if(!document.fullscreenElement){ (document.documentElement.requestFullscreen||document.body.requestFullscreen||(()=>{})).call(document.documentElement); btnFullscreen.textContent='전체화면 해제'; } else { (document.exitFullscreen||(()=>{})).call(document); btnFullscreen.textContent='전체화면'; } }catch(_){} };
+  document.addEventListener('fullscreenchange',()=>{ btnFullscreen.textContent=document.fullscreenElement?'전체화면 해제':'전체화면'; });
   if(assistResizer){
     assistResizer.addEventListener('pointerdown', e=>{ resizing=true; assistResizer.setPointerCapture(e.pointerId); });
     assistResizer.addEventListener('pointermove', e=>{ if(!resizing) return; const maxW=Math.floor(window.innerWidth*0.95); const newW=Math.max(300, Math.min(maxW, Math.round(window.innerWidth - e.clientX))); assistWidthPx=newW; assistPanel.style.width=newW+'px'; });
@@ -142,6 +168,10 @@ label,input,span{font-size:14px}
   // ---------- Calibrate / Reset ----------
   btnCalib.onclick=()=>{ const cur=wrap(yawRad+yawOffsetRad); yawOffsetRad+=-cur; };
   btnReset.onclick=()=>{ yawOffsetRad=0; altOffsetRad=0; timeOffsetMs=0; yawRad=0; pitchRad=0; fovDeg=90; };
+  yawOffsetInput.oninput=(e)=>{ const v=Number(e.target.value)||0; yawOffsetRad=d2r(v); yawOffsetVal.textContent=String(Math.round(v)); };
+  altOffsetInput.oninput=(e)=>{ const v=Number(e.target.value)||0; altOffsetRad=d2r(v); altOffsetVal.textContent=String(Math.round(v)); };
+  timeOffsetInput.oninput=(e)=>{ const v=Number(e.target.value)||0; timeOffsetMs=v*3600000; timeOffsetVal.textContent=(v>=0?'+':'')+v.toFixed(2)+'h'; };
+  fovInput.oninput=(e)=>{ const v=Number(e.target.value)||90; fovDeg=Math.max(30,Math.min(120,v)); fovVal.textContent=String(Math.round(fovDeg)); };
 
   // ---------- Serial ----------
   btnSerial.onclick=connectSerial;
@@ -149,14 +179,20 @@ label,input,span{font-size:14px}
     try{
       if(!('serial' in navigator)){ alert('Web Serial 미지원(Chrome 필요)'); return; }
       if(!(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){ alert('https 또는 localhost에서 실행하세요'); return; }
-      const baud=115200; const filters=[{usbVendorId:0x2341},{usbVendorId:0x1A86},{usbVendorId:0x10C4},{usbVendorId:0x0403}];
-      let port; try{ port=await navigator.serial.requestPort({filters}); }catch{ port=await navigator.serial.requestPort(); }
+      const baud=parseInt(baudSelect.value,10)||115200; const filters=[{usbVendorId:0x2341},{usbVendorId:0x1A86},{usbVendorId:0x10C4},{usbVendorId:0x0403}];
+      // Try pre-authorized ports first
+      let ports=[]; try{ ports=await navigator.serial.getPorts(); }catch(_){ ports=[]; }
+      let port=null;
+      if(ports && ports.length){ port=ports[0]; }
+      if(!port){ try{ port=await navigator.serial.requestPort({filters}); }catch{ port=await navigator.serial.requestPort(); } }
       await port.open({baudRate:baud});
       const dec=new TextDecoderStream(), enc=new TextEncoderStream();
       port.readable.pipeTo(dec.writable).catch(()=>{}); enc.readable.pipeTo(port.writable).catch(()=>{});
       serialReader=dec.readable.getReader(); serialWriter=enc.writable.getWriter(); serialPort=port; serialConnected=true;
       sensorStatus.textContent='시리얼 연결됨'; modeStatus.textContent='센서(시리얼)'; setAssistOpen(true);
       serialBuf='';
+      // Optional: ping the device to start streaming if firmware expects a command
+      try{ const te=new TextEncoder(); await serialWriter.write(te.encode('YPR?\n')); }catch(_){ }
       while(serialConnected && serialReader){
         const {value,done}=await serialReader.read(); if(done) break;
         if(value!=null){ serialBuf+=String(value); let i; while((i=serialBuf.indexOf('\n'))>=0){ const line=serialBuf.slice(0,i).replace(/\r+$/,''); serialBuf=serialBuf.slice(i+1); if(line.trim()) parseSerialLine(line.trim()); } }
