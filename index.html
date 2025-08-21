@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ko">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Serial Sensor UI</title>
+	<style>
+		body { font-family: system-ui, sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
+		header { padding: 12px 16px; border-bottom: 1px solid #e5e7eb; display: flex; gap: 8px; align-items: center; }
+		main { flex: 1; display: grid; place-items: center; }
+		#stage { width: 600px; height: 400px; border: 2px dashed #cbd5e1; border-radius: 8px; position: relative; background: #f8fafc; }
+		#dot { width: 28px; height: 28px; background: #3b82f6; border-radius: 9999px; position: absolute; left: 286px; top: 186px; box-shadow: 0 4px 14px rgba(0,0,0,0.15); transition: transform 60ms linear; }
+		#log { font-size: 12px; color: #475569; white-space: pre-wrap; max-height: 160px; overflow: auto; padding: 8px 16px; }
+		button { padding: 8px 12px; border: 1px solid #cbd5e1; background: white; border-radius: 6px; cursor: pointer; }
+		button:disabled { opacity: 0.5; cursor: not-allowed; }
+		kbd { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; border: 1px solid #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+	</style>
+</head>
+<body>
+	<header>
+		<button id="connect">시리얼 연결</button>
+		<button id="disconnect" disabled>연결 해제</button>
+		<div style="margin-left:auto; font-size:12px; color:#475569;">
+			Web Serial은 Chromium 기반 브라우저에서만 동작합니다.
+		</div>
+	</header>
+	<main>
+		<div id="stage">
+			<div id="dot" aria-label="sensor-dot"></div>
+		</div>
+	</main>
+	<div id="log"></div>
+	<script>
+		const connectBtn = document.getElementById('connect');
+		const disconnectBtn = document.getElementById('disconnect');
+		const logEl = document.getElementById('log');
+		const dot = document.getElementById('dot');
+		const stage = document.getElementById('stage');
+
+		/**
+		 * 예상 센서 데이터 포맷 (한 줄 단위):
+		 * x,y\n  예) 123,45
+		 * x 범위, y 범위는 자유. 자동으로 스케일링함.
+		 */
+		let port = null;
+		let reader = null;
+		let keepReading = false;
+		let recent = { x: 0, y: 0 };
+		const historySize = 12;
+		const xHistory = [];
+		const yHistory = [];
+
+		function log(msg) {
+			const time = new Date().toLocaleTimeString();
+			logEl.textContent = `[${time}] ${msg}\n` + logEl.textContent;
+		}
+
+		function pushHistory(arr, v) {
+			arr.push(v);
+			if (arr.length > historySize) arr.shift();
+		}
+
+		function smooth(values) {
+			if (values.length === 0) return 0;
+			const sum = values.reduce((a,b)=>a+b,0);
+			return sum / values.length;
+		}
+
+		function mapRange(value, inMin, inMax, outMin, outMax) {
+			if (inMax === inMin) return (outMin + outMax) / 2;
+			const clamped = Math.max(inMin, Math.min(inMax, value));
+			const ratio = (clamped - inMin) / (inMax - inMin);
+			return outMin + ratio * (outMax - outMin);
+		}
+
+		let xMin = -100, xMax = 100;
+		let yMin = -100, yMax = 100;
+		const padding = 10;
+
+		function updateDot(x, y) {
+			const stageRect = stage.getBoundingClientRect();
+			const width = stageRect.width;
+			const height = stageRect.height;
+
+			// 동적 범위 업데이트 (적응형)
+			xMin = Math.min(xMin, x);
+			xMax = Math.max(xMax, x);
+			yMin = Math.min(yMin, y);
+			yMax = Math.max(yMax, y);
+
+			const px = mapRange(x, xMin, xMax, padding, width - padding);
+			const py = mapRange(y, yMin, yMax, padding, height - padding);
+
+			dot.style.transform = `translate(${px - 14}px, ${py - 14}px)`;
+		}
+
+		async function connectSerial() {
+			try {
+				if (!('serial' in navigator)) {
+					alert('이 브라우저는 Web Serial을 지원하지 않습니다. Chrome/Edge 최신 버전을 사용하세요.');
+					return;
+				}
+				port = await navigator.serial.requestPort();
+				await port.open({ baudRate: 9600 });
+				keepReading = true;
+				connectBtn.disabled = true;
+				disconnectBtn.disabled = false;
+				log('시리얼 포트에 연결되었습니다.');
+
+				const decoder = new TextDecoderStream();
+				const lineReader = decoder.readable.pipeThrough(new TransformStream({
+					start() { this.buffer = ''; },
+					transform(chunk, controller) {
+						this.buffer += chunk;
+						const lines = this.buffer.split('\n');
+						this.buffer = lines.pop();
+						for (const line of lines) controller.enqueue(line.trim());
+					},
+					flush(controller) {
+						if (this.buffer) controller.enqueue(this.buffer.trim());
+					}
+				}));
+
+				await port.readable.pipeTo(decoder.writable);
+				reader = lineReader.getReader();
+
+				while (keepReading) {
+					const { value, done } = await reader.read();
+					if (done) break;
+					if (!value) continue;
+					const parts = value.split(',');
+					if (parts.length >= 2) {
+						const x = Number(parts[0]);
+						const y = Number(parts[1]);
+						if (!Number.isNaN(x) && !Number.isNaN(y)) {
+							recent = { x, y };
+							pushHistory(xHistory, x);
+							pushHistory(yHistory, y);
+							const sx = smooth(xHistory);
+							const sy = smooth(yHistory);
+							updateDot(sx, sy);
+							continue;
+						}
+					}
+					log(`알 수 없는 데이터: ${value}`);
+				}
+			} catch (err) {
+				console.error(err);
+				log(`에러: ${err.message || err}`);
+			} finally {
+				await cleanup();
+			}
+		}
+
+		async function cleanup() {
+			try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch {}
+			try { if (port && port.readable) { await port.close(); } } catch {}
+			reader = null;
+			keepReading = false;
+			connectBtn.disabled = false;
+			disconnectBtn.disabled = true;
+			log('시리얼 연결이 종료되었습니다.');
+		}
+
+		connectBtn.addEventListener('click', () => {
+			connectSerial();
+		});
+		disconnectBtn.addEventListener('click', () => {
+			keepReading = false;
+		});
+	</script>
+</body>
+</html>
